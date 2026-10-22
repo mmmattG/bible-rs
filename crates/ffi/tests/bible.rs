@@ -282,3 +282,24 @@ fn unknown_translations_and_chapters_fail_softly() {
     assert_eq!((last.book, last.chapter), (65, 22));
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn the_scrubber_stops_at_the_verses_a_translation_has() {
+    let (bible, dir) = open("scrubber");
+    assert_eq!(bible.scrub_axis("kjv".into()).length(), 31_102.0);
+    // The BSB leaves out 16 verses, Mark 7:16 among them: Verse speed goes from 15 to 17.
+    let bsb = bible.scrub_axis("bsb".into());
+    assert_eq!(bsb.length(), 31_086.0);
+    let mark7 = index("mk 7");
+    let at15 = bsb.position(mark7, 15);
+    assert_eq!(bsb.position(mark7, 16), at15);
+    assert_eq!(bsb.point(at15 + 1.5, ScrubSpeed::Verse).reference, "Mark 7:17");
+    // The WEB sets Romans 16:25–27 at the end of Romans 14, as verses 24–26.
+    let web = bible.scrub_axis("web".into());
+    let romans14 = web.position(index("rom 14"), 26);
+    assert_eq!(web.point(romans14 + 0.5, ScrubSpeed::Verse).reference, "Romans 14:26");
+    assert_eq!(web.point(romans14 + 1.5, ScrubSpeed::Verse).reference, "Romans 15:1");
+    // A translation that can't be read gets the canonical grid.
+    assert_eq!(bible.scrub_axis("nlt".into()).length(), 31_102.0);
+    let _ = std::fs::remove_dir_all(dir);
+}

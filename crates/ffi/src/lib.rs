@@ -19,9 +19,11 @@ use bible_core::study::{self, StudyStore};
 use bible_core::{BookId, ChapterIdx};
 
 pub mod content;
+pub mod scrubber;
 pub mod tokens;
 
 pub use content::{Block, BlockKind, ChapterContent, ChapterStatus, ContentOptions, Run};
+pub use scrubber::{ScrubAxis, ScrubGesture, ScrubLandmark, ScrubPoint, ScrubSpeed};
 pub use tokens::{Palette, ThemeName, palette};
 
 uniffi::setup_scaffolding!();
@@ -374,6 +376,11 @@ impl Bible {
         let refs = verses.into_iter().map(VerseRef::core).collect::<Result<Vec<_>, _>>()?;
         bible_core::copy::format_verses(&t, &refs)
             .ok_or_else(|| fail("those verses aren't in this translation"))
+    }
+
+    /// The Scrubber's axis through the whole Bible, in `translation`'s verses.
+    pub fn scrub_axis(&self, translation: String) -> Arc<ScrubAxis> {
+        Arc::new(ScrubAxis::new(self.local(&translation).ok().as_deref()))
     }
 
     /// Highlights, notes and bookmarks on the verses of a chapter (as numbered in `translation`).

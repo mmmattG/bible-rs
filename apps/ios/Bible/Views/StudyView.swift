@@ -13,7 +13,7 @@ struct StudyView: View {
             List {
                 ForEach(items, id: \.verse) { item in
                     Button {
-                        store.go(to: Int(item.chapterIndex), verse: Int(item.verse.verse), flash: true)
+                        store.go(to: Int(item.chapterIndex), verse: Int(item.verse.verse), flash: .verse)
                         dismiss()
                     } label: {
                         StudyRow(item: item, kind: kind, theme: theme)

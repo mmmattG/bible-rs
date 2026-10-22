@@ -40,7 +40,7 @@ struct SearchView: View {
                     Section {
                         ForEach(hits, id: \.verse) { hit in
                             Button {
-                                store.go(to: Int(hit.chapterIndex), verse: Int(hit.verse.verse), flash: true)
+                                store.go(to: Int(hit.chapterIndex), verse: Int(hit.verse.verse), flash: .verse)
                                 dismiss()
                             } label: {
                                 HitRow(hit: hit, theme: theme)

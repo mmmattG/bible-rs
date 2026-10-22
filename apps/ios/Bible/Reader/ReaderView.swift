@@ -10,6 +10,19 @@ protocol ReaderViewDelegate: AnyObject {
     func readerDidTapPage(_ reader: ReaderView)
     /// The reader is scrolling on through the text (`true`) or back.
     func reader(_ reader: ReaderView, isReadingOn: Bool)
+    /// A finger started scrolling the reader, or the status bar sent it to the chapter's top.
+    func readerDidBeginScrolling(_ reader: ReaderView)
+    /// The reader came to rest after a drag or fling, or set off for the chapter's top.
+    func readerDidEndScrolling(_ reader: ReaderView)
+}
+
+/// What a jump marks briefly where it lands.
+enum Flash: Equatable {
+    case none
+    /// The verse it went to.
+    case verse
+    /// The chapter's head (book name and numeral, or the PSALM label).
+    case head
 }
 
 /// Verses picked in one chapter.
@@ -73,7 +86,7 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate, UIGestureRecognizerD
     }
 
     private var placed: [Placed] = []
-    private var pendingJump: (chapter: Int, verse: Int, animated: Bool, flash: Bool)?
+    private var pendingJump: (chapter: Int, verse: Int, animated: Bool, flash: Flash)?
     private var reported: (chapter: Int, verse: Int)?
     private var lastOffset: CGFloat = 0
     private var travel: CGFloat = 0
@@ -132,9 +145,14 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate, UIGestureRecognizerD
         }
     }
 
-    func jump(to chapter: Int, verse: Int, animated: Bool, flash: Bool) {
+    func jump(to chapter: Int, verse: Int, animated: Bool, flash: Flash) {
         pendingJump = (chapter, verse, animated, flash)
         setNeedsLayout()
+    }
+
+    /// Stops a fling where it is.
+    func stopScrolling() {
+        setContentOffset(contentOffset, animated: false)
     }
 
     /// Reads highlights, notes and bookmarks again and redraws.
@@ -178,13 +196,13 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate, UIGestureRecognizerD
         setNeedsLayout()
     }
 
-    private func perform(_ jump: (chapter: Int, verse: Int, animated: Bool, flash: Bool), style: Typography) {
+    private func perform(_ jump: (chapter: Int, verse: Int, animated: Bool, flash: Flash), style: Typography) {
         let chapter = min(max(jump.chapter, 0), Self.chapterCount - 1)
         if jump.animated, let p = placed.first(where: { $0.layout.index == chapter }) {
             let target = offset(for: p, verse: jump.verse)
             if abs(target - contentOffset.y) < bounds.height * 3 {
                 setContentOffset(CGPoint(x: 0, y: target), animated: true)
-                if jump.flash { flash(chapter: chapter, verse: jump.verse) }
+                flash(jump.flash, chapter: chapter, verse: jump.verse)
                 return
             }
         }
@@ -192,7 +210,7 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate, UIGestureRecognizerD
         guard let p = placed.first else { return }
         contentOffset = CGPoint(x: 0, y: offset(for: p, verse: jump.verse))
         fill(style)
-        if jump.flash { flash(chapter: chapter, verse: jump.verse) }
+        flash(jump.flash, chapter: chapter, verse: jump.verse)
     }
 
     /// The offset that puts a verse (or the chapter's head, for verse 1) at the reading line.
@@ -379,10 +397,16 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate, UIGestureRecognizerD
 
     private var flashLayers: [CALayer] = []
 
-    /// Briefly marks a verse arrived at from search or a reference.
-    func flash(chapter: Int, verse: Int) {
-        guard verse > 0, let p = placed.first(where: { $0.layout.index == chapter }) else { return }
-        let bands = p.layout.bands(of: verse)
+    /// Briefly marks a verse arrived at from search or a reference, or the head of a chapter the
+    /// Scrubber went to.
+    func flash(_ flash: Flash, chapter: Int, verse: Int) {
+        guard let p = placed.first(where: { $0.layout.index == chapter }) else { return }
+        let bands: [CGRect] =
+            switch flash {
+            case .none: []
+            case .verse: verse > 0 ? p.layout.bands(of: verse) : []
+            case .head: p.layout.headFrame.map { [$0] } ?? []
+            }
         guard !bands.isEmpty else { return }
         let path = UIBezierPath()
         for band in bands {
@@ -429,6 +453,18 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate, UIGestureRecognizerD
         }
     }
 
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        readerDelegate?.readerDidBeginScrolling(self)
+    }
+
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if !decelerate { readerDelegate?.readerDidEndScrolling(self) }
+    }
+
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        readerDelegate?.readerDidEndScrolling(self)
+    }
+
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         let dy = contentOffset.y - lastOffset
         lastOffset = contentOffset.y
@@ -448,7 +484,10 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate, UIGestureRecognizerD
         guard let position = readingPosition(),
             let p = placed.first(where: { $0.layout.index == position.chapter })
         else { return false }
+        // To the Scrubber this is a scroll like any other: the rail shows, and Back lets go.
+        readerDelegate?.readerDidBeginScrolling(self)
         setContentOffset(CGPoint(x: 0, y: offset(for: p, verse: 1)), animated: true)
+        readerDelegate?.readerDidEndScrolling(self)
         return false
     }
 

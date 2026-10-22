@@ -59,6 +59,8 @@ final class ChapterLayout {
     private let words: [Int: [NSRange]]
     private let spoken: [Int: String]
     private let headings: [(range: NSRange, text: String)]
+    /// How many of `headings` are the chapter's head (book name, numeral or PSALM label).
+    private let headLines: Int
     private let bodyFont: UIFont
 
     var book: Int { Int(content.book) }
@@ -77,6 +79,7 @@ final class ChapterLayout {
         words = set.words
         spoken = set.spoken
         headings = set.headings
+        headLines = set.headLines
 
         let column = t.column
         let top = content.book == 18 ? 0 : t.s(16)
@@ -170,6 +173,13 @@ final class ChapterLayout {
             let rect = manager.boundingRect(forGlyphRange: glyphs, in: container)
             return (heading.text, rect.offsetBy(dx: origin.x, dy: origin.y))
         }
+    }
+
+    /// Around the chapter's head: the book name and numeral, or the PSALM label.
+    var headFrame: CGRect? {
+        let frames = headingElements.prefix(headLines).map(\.frame)
+        guard let first = frames.first else { return nil }
+        return frames.dropFirst().reduce(first) { $0.union($1) }.insetBy(dx: -typography.s(8), dy: -typography.s(2))
     }
 
     /// Where a verse's note and bookmark markers sit: in the right margin by its first line.
@@ -331,6 +341,7 @@ private struct Typesetter {
     var words: [Int: [NSRange]] = [:]
     var spoken: [Int: String] = [:]
     var headings: [(range: NSRange, text: String)] = []
+    var headLines = 0
     private var style = NSParagraphStyle()
     private var lineFont: UIFont
 
@@ -359,6 +370,7 @@ private struct Typesetter {
             display("\(c.chapter)", before: s(4))
             firstSpace = s(24)
         }
+        headLines = headings.count
 
         guard c.status == .ready else {
             let message =
