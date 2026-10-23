@@ -30,8 +30,8 @@ const VERSE_STEP: f64 = 16.0;
 const GRAB: f64 = 44.0;
 
 /// The parts of the Bible the Scrubber names, by first book (0 = Genesis), and whether the rail
-/// marks where each starts.
-const SECTIONS: [(u8, &str, bool); 9] = [
+/// marks where each starts. Revelation sits with the General Epistles, as in Store the Word.
+const SECTIONS: [(u8, &str, bool); 8] = [
     (0, "Pentateuch", false),
     (5, "History", true),
     (17, "Wisdom and Poetry", true),
@@ -40,7 +40,6 @@ const SECTIONS: [(u8, &str, bool); 9] = [
     (39, "Gospels and Acts", true),
     (44, "Pauline Epistles", true),
     (57, "General Epistles", true),
-    (65, "Prophecy", false),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -390,7 +389,7 @@ mod tests {
         assert_eq!((verse.reference.as_str(), verse.verse), ("Psalm 23:4", 4));
         let john = ChapterIdx::new(BookId(42), 3).unwrap().0;
         assert_eq!(axis.point(axis.position(john, 16), ScrubSpeed::Bible).section, "Gospels and Acts");
-        assert_eq!(axis.point(axis.length(), ScrubSpeed::Bible).section, "Prophecy");
+        assert_eq!(axis.point(axis.length(), ScrubSpeed::Bible).section, "General Epistles");
     }
 
     #[test]
