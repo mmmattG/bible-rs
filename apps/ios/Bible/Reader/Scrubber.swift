@@ -283,10 +283,6 @@ final class ScrubberView: UIView, UIGestureRecognizerDelegate {
     private func begin(at p: CGPoint) {
         guard isVisible, gesture == nil, let axis else { return }
         hideTask?.cancel()
-        delegate?.scrubberDidBegin(self)
-        // The hold has picked the rail up.
-        impact.impactOccurred()
-        tick.prepare()
         let gesture = ScrubGesture(
             axis: axis, resting: restingPlace(axis), y: Double(p.y),
             trackTop: Double(rail.frame.minY + track.frame.minY), trackHeight: Double(track.bounds.height))
@@ -294,6 +290,12 @@ final class ScrubberView: UIView, UIGestureRecognizerDelegate {
         self.gesture = gesture
         self.point = point
         finger = p
+        // Only now the drag is under way: stopping a glide ends the reader's scroll, and the end of
+        // a scroll would otherwise set the rail to hide mid-drag.
+        delegate?.scrubberDidBegin(self)
+        // The hold has picked the rail up.
+        impact.impactOccurred()
+        tick.prepare()
         bubble.isHidden = false
         render()
     }
