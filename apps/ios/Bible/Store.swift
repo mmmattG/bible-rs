@@ -56,7 +56,17 @@ struct JumpRequest: Equatable {
     var chapter: Int
     var verse: Int
     var animated = false
-    var flash = false
+    var flash = Flash.none
+    /// Made by the Scrubber or its Back button, so the rail shows where it landed.
+    var scrubbed = false
+}
+
+/// Where a Scrubber jump started, for Back.
+struct ScrubOrigin: Equatable {
+    var position: Position
+    /// Back lands on the verse when the reader was past the chapter's first, and on the
+    /// chapter's head otherwise.
+    var atVerse: Bool { position.verse > 1 }
 }
 
 enum Sheet: Identifiable, Equatable {
@@ -93,6 +103,9 @@ final class Store {
     private(set) var position: Position
     private(set) var jump: JumpRequest?
     var selection: VerseSelection?
+    /// Where each Scrubber jump since you last scrolled or moved another way started, the latest
+    /// last. Back steps through them.
+    private(set) var scrubOrigins: [ScrubOrigin] = []
     /// Bumped whenever highlights, notes or bookmarks change.
     private(set) var marksVersion = 0
     var sheet: Sheet?
@@ -166,6 +179,7 @@ final class Store {
 
     private func translationChanged() {
         selection = nil
+        dismissScrubBack()
         warm()
     }
 
@@ -184,16 +198,54 @@ final class Store {
 
     // MARK: Moving
 
-    func go(to chapter: Int, verse: Int = 1, flash: Bool = false, animated: Bool = false) {
-        selection = nil
-        barsHidden = false
-        position = Position(chapter: chapter, verse: verse)
-        jump = JumpRequest(chapter: chapter, verse: verse, animated: animated, flash: flash)
-        scheduleSave()
+    func go(to chapter: Int, verse: Int = 1, flash: Flash = .none, animated: Bool = false) {
+        dismissScrubBack()
+        move(JumpRequest(chapter: chapter, verse: verse, animated: animated, flash: flash))
     }
 
     func go(to reference: Reference) {
-        go(to: Int(reference.chapterIndex), verse: Int(reference.verse ?? 1), flash: reference.verse != nil)
+        let verse = reference.verse.map(Int.init)
+        go(to: Int(reference.chapterIndex), verse: verse ?? 1, flash: verse != nil ? .verse : .none)
+    }
+
+    private func move(_ request: JumpRequest) {
+        selection = nil
+        barsHidden = false
+        position = Position(chapter: request.chapter, verse: request.verse)
+        jump = request
+        scheduleSave()
+    }
+
+    // MARK: Scrubber
+
+    /// Lets go of the Scrubber at a chapter's head, or at a verse at Verse speed. Letting go in
+    /// the chapter you're reading, above Verse speed, stays put.
+    func scrub(to chapter: Int, verse: Int, atVerse: Bool) {
+        guard atVerse || chapter != position.chapter else { return }
+        scrubOrigins.append(ScrubOrigin(position: position))
+        move(JumpRequest(chapter: chapter, verse: atVerse ? verse : 1, flash: atVerse ? .verse : .head, scrubbed: true))
+    }
+
+    /// Back to where the last Scrubber jump started.
+    func scrubBack() {
+        guard let origin = scrubOrigins.popLast() else { return }
+        let verse = origin.atVerse ? origin.position.verse : 1
+        move(JumpRequest(
+            chapter: origin.position.chapter, verse: verse, flash: origin.atVerse ? .verse : .head, scrubbed: true))
+    }
+
+    func dismissScrubBack() {
+        if !scrubOrigins.isEmpty { scrubOrigins.removeAll() }
+    }
+
+    /// "Back to John 3" or "Back to John 3:16".
+    var scrubBackLabel: String? {
+        guard let origin = scrubOrigins.last else { return nil }
+        let p = origin.position
+        let place = origin.atVerse
+            ? rangeLabel(from: ref(chapter: p.chapter, verse: p.verse), to: ref(chapter: p.chapter, verse: p.verse))
+            : chapterLabel(index: UInt16(p.chapter))
+        return "Back to \(place)"
     }
 
     func reached(_ chapter: Int, verse: Int) {

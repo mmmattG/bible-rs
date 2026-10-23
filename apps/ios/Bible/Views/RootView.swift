@@ -48,6 +48,9 @@ struct RootView: View {
                     if store.selection != nil {
                         SelectionBar(theme: theme)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
+                    } else if let back = store.scrubBackLabel {
+                        ScrubBack(label: back, theme: theme)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
                 }
                 .padding(.horizontal, 12)
@@ -57,6 +60,7 @@ struct RootView: View {
         .animation(.smooth(duration: 0.28), value: store.barsHidden)
         .animation(.smooth(duration: 0.28), value: store.selection != nil)
         .animation(.smooth(duration: 0.28), value: store.toast)
+        .animation(.smooth(duration: 0.28), value: store.scrubOrigins.isEmpty)
         .statusBarHidden(store.barsHidden)
         .preferredColorScheme(preferredScheme)
         .tint(Color(theme.accent))
@@ -165,5 +169,41 @@ struct TopBar: View {
         .foregroundStyle(Color(theme.ink))
         .accessibilityLabel(label)
         .accessibilityIdentifier(id)
+    }
+}
+
+/// After a Scrubber jump: back to where it started, a step at a time.
+struct ScrubBack: View {
+    @Environment(Store.self) private var store
+    let label: String
+    let theme: Theme
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Button {
+                store.scrubBack()
+            } label: {
+                Label(label, systemImage: "arrow.uturn.backward")
+                    .font(.subheadline.weight(.medium))
+                    .lineLimit(1)
+                    .padding(.leading, 16)
+                    .padding(.trailing, 4)
+                    .frame(minHeight: 44)
+            }
+            .accessibilityIdentifier("scrubber-back")
+
+            Button {
+                store.dismissScrubBack()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Color(theme.ink2))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("Dismiss Back")
+        }
+        .foregroundStyle(Color(theme.ink))
+        .glass(in: Capsule(), theme: theme)
     }
 }

@@ -13,6 +13,10 @@ final class BibleUITests: XCTestCase {
         XCTAssertTrue(reference.waitForExistence(timeout: 10))
     }
 
+    override func tearDown() {
+        restoreIdleWaits()
+    }
+
     private var reference: XCUIElement { app.buttons["reference"] }
 
     private func verse(_ id: String) -> XCUIElement { app.staticTexts[id] }
@@ -207,6 +211,217 @@ final class BibleUITests: XCTestCase {
         measure(metrics: [XCTOSSignpostMetric.scrollDecelerationMetric], options: options) {
             app.swipeUp(velocity: .fast)
         }
+    }
+
+    // MARK: Scrubber
+    //
+    // A short hold picks the rail up. A drag is then one straight line, so it moves at Bible speed
+    // until it has come far enough inward to slow down. These drags move only inward once they're
+    // slower, or move only along the rail.
+
+    func testScrubberJumpsAtBibleSpeedAndGoesBack() {
+        let rail = revealScrubber()
+        // A press away from the thumb starts where it lands: the top of the track is Genesis. The
+        // middle of the Bible, by verses, is in the Psalms.
+        scrubberDrag(from: trackPoint(rail, 0), to: trackPoint(rail, 0.5))
+        expectBook("Psalm")
+        let back = app.buttons["scrubber-back"]
+        XCTAssertTrue(back.waitForExistence(timeout: 3))
+        XCTAssertTrue(back.label.hasPrefix("Back to John 1"), back.label)
+        back.tap()
+        expectChapter("John 1")
+        XCTAssertFalse(back.exists)
+    }
+
+    func testScrubberLandsOnAVerseWithoutSelectingIt() {
+        let rail = revealScrubber()
+        // From the thumb 150 pt inward is Verse speed, which starts at the chapter's first verse.
+        let start = thumbPoint(rail)
+        scrubberDrag(from: start, to: start.withOffset(CGVector(dx: -150 - 32, dy: 1)))
+        expectChapter("John 1")
+        XCTAssertTrue(verse("John 1:1").isHittable)
+        XCTAssertFalse(app.buttons["Clear selection"].exists)
+        XCTAssertTrue(app.buttons["scrubber-back"].waitForExistence(timeout: 3))
+    }
+
+    func testScrubberStaysPutInTheSameChapterAndBackStepsThroughJumps() {
+        let rail = revealScrubber()
+        // Into Chapter speed (80 pt inward) and let go without moving a chapter: nothing moves.
+        let start = thumbPoint(rail)
+        scrubberDrag(from: start, to: start.withOffset(CGVector(dx: -80 - 32, dy: 0)))
+        expectChapter("John 1")
+        let back = app.buttons["scrubber-back"]
+        XCTAssertFalse(back.exists)
+        // Holding still on the rail and letting go jumps there.
+        hold(trackPoint(rail, 0.63))
+        expectBook("Jeremiah")
+        hold(trackPoint(rail, 0.295))
+        expectBook("1 Kings")
+        XCTAssertTrue(back.waitForExistence(timeout: 3))
+        back.tap()
+        expectBook("Jeremiah")
+        XCTAssertTrue(back.label.hasPrefix("Back to John 1"), back.label)
+        // Scrolling by hand lets go of the rest.
+        app.swipeUp()
+        XCTAssertTrue(back.waitForNonExistence(timeout: 3))
+    }
+
+    func testATapOnTheRailGoesToTheReader() {
+        let barsShown = reference.isHittable
+        let rail = revealScrubber()
+        // A tap is too short to pick the rail up. The reader has it: it selects the verse at the
+        // edge, or shows or hides the bars, and nothing jumps.
+        trackPoint(rail, 0.1).tap()
+        let selected = app.buttons["Clear selection"].waitForExistence(timeout: 1)
+        XCTAssertTrue(selected || reference.isHittable != barsShown, "the reader didn't get the tap")
+        XCTAssertTrue(verse("John 1:1").exists)
+        XCTAssertFalse(app.buttons["scrubber-back"].exists)
+    }
+
+    func testAFlickOnTheRailScrollsTheReader() {
+        XCTAssertTrue(verse("John 1:1").isHittable)
+        let rail = revealScrubber()
+        // A flick moves before the hold is up, so it scrolls the reader instead.
+        trackPoint(rail, 0.6).press(
+            forDuration: 0, thenDragTo: trackPoint(rail, 0.1), withVelocity: .fast, thenHoldForDuration: 0)
+        expectBook("John")
+        XCTAssertFalse(verse("John 1:1").isHittable)
+        XCTAssertFalse(app.buttons["scrubber-back"].exists)
+    }
+
+    func testScrubberHidesWhileVersesAreSelected() {
+        _ = revealScrubber()
+        verse("John 1:4").tap()
+        XCTAssertTrue(app.buttons["Clear selection"].waitForExistence(timeout: 3))
+        XCTAssertFalse(scrubber.exists)
+    }
+
+    func testTouchesMidGlideKeepScrolling() throws {
+        let rail = revealScrubber()
+        try skipIdleWaits()
+        // Grab the rail while a flick still glides, and scrub to the Psalms.
+        flick()
+        scrubberDrag(from: trackPoint(rail, 0.2), to: trackPoint(rail, 0.5))
+        expectBook("Psalm")
+        // Each flick lands while the one before still glides.
+        for _ in 0..<3 { expectScroll { flick() } }
+        expectScroll {
+            flick()
+            drag()
+        }
+        // And once it has settled.
+        sleep(2)
+        expectScroll { drag() }
+    }
+
+    private var scrubber: XCUIElement { app.descendants(matching: .any)["scrubber"] }
+
+    /// Scrolls a little, which shows the rail for two seconds, and returns where the rail is. Just
+    /// after a simulator boots, the app can be too busy to notice the first small scroll, so it
+    /// tries again. The frame is read once: each read takes time, and the rail doesn't wait.
+    private func revealScrubber() -> CGRect {
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.55))
+        for _ in 0..<3 where !scrubber.exists {
+            start.press(
+                forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -24)), withVelocity: .slow,
+                thenHoldForDuration: 0)
+            _ = scrubber.waitForExistence(timeout: 2)
+        }
+        XCTAssertTrue(scrubber.exists)
+        return scrubber.frame
+    }
+
+    /// A point on the rail's track, `fraction` of the way through the Bible by verses. The track
+    /// runs the rail's height less 22 pt at each end.
+    private func trackPoint(_ rail: CGRect, _ fraction: CGFloat) -> XCUICoordinate {
+        let y = rail.minY + 22 + (rail.height - 44) * fraction
+        return app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: rail.maxX - 12, dy: y))
+    }
+
+    /// Where the thumb rests at John 1, which starts 26,045 of the KJV's 31,102 verses in.
+    private func thumbPoint(_ rail: CGRect) -> XCUICoordinate {
+        trackPoint(rail, 26_045 / 31_102)
+    }
+
+    /// Holds to pick the rail up, then drags and holds two seconds before letting go, as someone
+    /// reading the label would.
+    private func scrubberDrag(from start: XCUICoordinate, to end: XCUICoordinate) {
+        start.press(forDuration: 0.5, thenDragTo: end, withVelocity: .fast, thenHoldForDuration: 2)
+    }
+
+    /// Holds still on the rail long enough to pick it up, then lets go.
+    private func hold(_ point: XCUICoordinate) {
+        point.press(forDuration: 0.5)
+    }
+
+    private func flick() {
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.7))
+        start.press(
+            forDuration: 0, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -220)), withVelocity: .fast,
+            thenHoldForDuration: 0)
+    }
+
+    private func drag() {
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.7))
+        start.press(
+            forDuration: 0, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -220)), withVelocity: .slow,
+            thenHoldForDuration: 0.3)
+    }
+
+    /// Checks that a gesture moves the text, by the first verse of the chapter in the toolbar.
+    private func expectScroll(_ gesture: () -> Void, file: StaticString = #filePath, line: UInt = #line) {
+        let chapter = reference.label.components(separatedBy: ".").first ?? ""
+        let anchor = verse(chapter + ":1")
+        XCTAssertTrue(anchor.exists, "no \(chapter):1 to measure by", file: file, line: line)
+        let before = anchor.frame.minY
+        gesture()
+        XCTAssertGreaterThan(before - anchor.frame.minY, 20, "the text didn't move", file: file, line: line)
+    }
+
+    private var skippedWaits: [(method: Method, original: IMP)] = []
+
+    /// XCTest waits for the app to go still before each gesture, so it never touches the reader
+    /// mid-glide, as a thumb often does. This turns the wait off, in the test runner only, until
+    /// the test ends. It's private to XCTest: if a version of Xcode renames it, the test skips.
+    private func skipIdleWaits() throws {
+        let names = [
+            "waitForQuiescenceIncludingAnimationsIdle:",
+            "waitForQuiescenceIncludingAnimationsIdle:isPreEvent:",
+            "waitForQuiescenceIncludingAnimationsIdle:usingActivity:isPreEvent:",
+        ]
+        let process: AnyClass? = NSClassFromString("XCUIApplicationProcess")
+        for name in names {
+            guard let process, let method = class_getInstanceMethod(process, NSSelectorFromString(name)) else { continue }
+            // Each takes one to three flags, after self and the selector.
+            let noWait: AnyObject
+            switch method_getNumberOfArguments(method) {
+            case 3:
+                let block: @convention(block) (AnyObject, Bool) -> Void = { _, _ in }
+                noWait = block as AnyObject
+            case 4:
+                let block: @convention(block) (AnyObject, Bool, Bool) -> Void = { _, _, _ in }
+                noWait = block as AnyObject
+            case 5:
+                let block: @convention(block) (AnyObject, Bool, Bool, Bool) -> Void = { _, _, _, _ in }
+                noWait = block as AnyObject
+            default:
+                continue
+            }
+            skippedWaits.append((method, method_setImplementation(method, imp_implementationWithBlock(noWait))))
+        }
+        if skippedWaits.isEmpty { throw XCTSkip("XCTest's idle wait has changed; this test can't turn it off") }
+    }
+
+    private func restoreIdleWaits() {
+        for wait in skippedWaits { method_setImplementation(wait.method, wait.original) }
+        skippedWaits = []
+    }
+
+    /// Waits for the toolbar to name a chapter of a book ("Psalm" for any psalm).
+    private func expectBook(_ name: String, file: StaticString = #filePath, line: UInt = #line) {
+        let shown = NSPredicate(format: "label BEGINSWITH %@", name + " ")
+        let found = XCTNSPredicateExpectation(predicate: shown, object: reference)
+        XCTAssertEqual(XCTWaiter.wait(for: [found], timeout: 5), .completed, "expected \(name), saw \(reference.label)", file: file, line: line)
     }
 
     private func row(_ reference: String) -> XCUIElement {
