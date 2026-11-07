@@ -6,8 +6,8 @@ use bible_core::reference;
 use bible_core::study::{ReadingSession, StudyStore};
 use eframe::egui::text::{LayoutJob, TextFormat, TextWrapping};
 use eframe::egui::{
-    self, Align, Align2, Color32, FontId, Key, Modifiers, Order, Painter, Rect, ScrollArea, Sense, Stroke,
-    Ui, pos2, vec2,
+    self, Align2, Color32, FontId, Key, Modifiers, Order, Painter, Rect, ScrollArea, Sense, Stroke, Ui, pos2,
+    vec2,
 };
 
 use crate::actions::{Action, ExportKind, SettingsTab};
@@ -97,6 +97,7 @@ fn command_list(settings: &Settings) -> Vec<(&'static str, IconFn, Vec<&'static 
         ("Bigger text", icons::text_size, vec!["⌘", "+"], Action::FontSize(1.0)),
         ("Smaller text", icons::text_size, vec!["⌘", "−"], Action::FontSize(-1.0)),
         ("Toggle sidebar", icons::sidebar, vec!["⌘", "B"], Action::ToggleSidebar),
+        ("Recall memorised passages", icons::cards, vec![], Action::StartRecall),
         ("Export notes as Markdown…", icons::note, vec!["⌘", "E"], Action::Export(ExportKind::Markdown)),
         ("Export notes as JSON…", icons::note, vec!["⇧", "⌘", "E"], Action::Export(ExportKind::Json)),
         ("Import a translation…", icons::book, vec!["⌘", "I"], Action::ImportTranslation),
@@ -152,7 +153,7 @@ impl CommandPalette {
         Self { query: query.to_string(), ..Self::default() }
     }
 
-    fn items(&self, library: &Library, settings: &Settings) -> Vec<Item> {
+    fn items(&self, library: &Library, settings: &Settings, memorising: bool) -> Vec<Item> {
         let q = self.query.trim();
         let mut items = Vec::new();
         let entry = library.get(&settings.translation);
@@ -312,7 +313,10 @@ impl CommandPalette {
             }
         }
         let ql = q.to_lowercase();
-        for (title, icon, keys, action) in command_list(settings) {
+        // Recalling waits until something is memorised.
+        for (title, icon, keys, action) in
+            command_list(settings).into_iter().filter(|c| memorising || c.3 != Action::StartRecall)
+        {
             if q.is_empty() || title.to_lowercase().contains(&ql) {
                 items.push(command(icon, title.to_string(), keys, action));
             }
@@ -333,7 +337,7 @@ impl CommandPalette {
         if self.recent.is_none() {
             self.recent = Some(study.reading_since(bible_core::study::now() - 30 * 86_400));
         }
-        let items = self.items(library, settings);
+        let items = self.items(library, settings, !study.memorised().is_empty());
         if self.selected >= items.len() {
             self.selected = items.len().saturating_sub(1);
         }
@@ -372,20 +376,20 @@ impl CommandPalette {
         let screen = ctx.content_rect();
         let mut close = false;
         // Dim the window; clicking outside closes.
-        egui::Area::new(egui::Id::new("palette-backdrop")).order(Order::Middle).fixed_pos(screen.min).show(
-            ctx,
-            |ui| {
+        egui::Area::new(egui::Id::unique("palette-backdrop"))
+            .order(Order::Middle)
+            .fixed_pos(screen.min)
+            .show(ctx, |ui| {
                 let (r, resp) = ui.allocate_exact_size(screen.size(), Sense::click());
                 ui.painter().rect_filled(r, 0.0, p.scrim);
                 if resp.clicked() {
                     close = true;
                 }
-            },
-        );
+            });
         let width = WIDTH.min(screen.width() - 40.0);
         let left = (screen.center().x - width / 2.0).round();
         let max_results = (screen.height() - TOP - QUERY_H - 1.0 - FOOTER_H - 48.0).max(120.0);
-        egui::Area::new(egui::Id::new("palette"))
+        egui::Area::new(egui::Id::unique("palette"))
             .order(Order::Foreground)
             .fixed_pos(pos2(left, screen.top() + TOP))
             .show(ctx, |ui| {
@@ -423,7 +427,7 @@ impl CommandPalette {
                         .text_color(p.ink)
                         .frame(egui::Frame::NONE)
                         .margin(egui::Margin::ZERO)
-                        .vertical_align(Align::Center),
+                        .align(Align2::LEFT_CENTER),
                 );
                 if !self.opened {
                     resp.request_focus();
@@ -443,8 +447,10 @@ impl CommandPalette {
                 if scroll_to_selected {
                     let y = 4.0 + rows_height(&items[..self.selected]);
                     let h = items.get(self.selected).map_or(40.0, Item::height);
-                    let cur =
-                        ui.ctx().data(|d| d.get_temp::<f32>(egui::Id::new("palette-offset"))).unwrap_or(0.0);
+                    let cur = ui
+                        .ctx()
+                        .data(|d| d.get_temp::<f32>(egui::Id::unique("palette-offset")))
+                        .unwrap_or(0.0);
                     if y < cur {
                         sa = sa.vertical_scroll_offset(y - 28.0);
                     } else if y + h > cur + results_h {
@@ -480,7 +486,9 @@ impl CommandPalette {
                     }
                     ui.add_space(6.0);
                 });
-                ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("palette-offset"), out.state.offset.y));
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(egui::Id::unique("palette-offset"), out.state.clamped_offset().y)
+                });
 
                 // Footer: key hints.
                 let (foot, _) = ui.allocate_exact_size(vec2(width, FOOTER_H), Sense::hover());

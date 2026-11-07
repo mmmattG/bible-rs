@@ -1,5 +1,6 @@
 //! Application state and the per-frame UI orchestration.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -66,6 +67,10 @@ pub struct Settings {
     pub pinned_books: Vec<u8>,
     /// The sidebar's books in their testaments, or in the canon's sections.
     pub book_grouping: BookGrouping,
+    /// A recall hints at hidden words with their first letters, rather than showing nothing.
+    pub recall_letters: bool,
+    /// Data → Study Library (beta): the folder the study syncs with, if any.
+    pub study_library: Option<String>,
 }
 
 fn yes() -> bool {
@@ -102,6 +107,8 @@ impl Default for Settings {
             onboarded: false,
             pinned_books: Vec::new(),
             book_grouping: BookGrouping::Testament,
+            recall_letters: true,
+            study_library: None,
         }
     }
 }
@@ -170,6 +177,32 @@ pub fn initialize(data_dir: PathBuf, notify: Arc<dyn Fn() + Send + Sync>) -> Res
     // Decode the translation being read now; the rest warm up after the first frame.
     let _ = library.load(&settings.translation);
     Ok(Init { data_dir, study, library, settings, elapsed: t.elapsed() })
+}
+
+/// iCloud Drive's folder on this Mac, when there is one: where the folder picker starts.
+fn icloud_drive() -> Option<PathBuf> {
+    let dir = dirs::home_dir()?.join("Library/Mobile Documents/com~apple~CloudDocs");
+    dir.is_dir().then_some(dir)
+}
+
+/// The study library folder for a folder the reader picked: that folder when it's empty or
+/// already a library, else a `Bible Study Library` folder made in it. Never the app's own
+/// data folder (that holds the SQLite file, which isn't synced as a file).
+pub fn study_library_in(picked: &std::path::Path, data_dir: &std::path::Path) -> Result<PathBuf> {
+    let canon = |p: &std::path::Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let (picked_c, data_c) = (canon(picked), canon(data_dir));
+    if picked_c.starts_with(&data_c) || data_c.starts_with(&picked_c) {
+        anyhow::bail!("Choose a folder outside the app's own data folder");
+    }
+    let is_library = picked.join("library.json").is_file();
+    let empty =
+        std::fs::read_dir(picked)?.flatten().all(|e| e.file_name().to_string_lossy().starts_with('.'));
+    if is_library || empty {
+        return Ok(picked.to_path_buf());
+    }
+    let inner = picked.join("Bible Study Library");
+    std::fs::create_dir_all(&inner)?;
+    Ok(inner)
 }
 
 /// Back/forward navigation history.
@@ -247,7 +280,7 @@ struct Toast {
 
 impl Toast {
     fn area(&self) -> Id {
-        Id::new(("toast", self.id))
+        Id::unique(("toast", self.id))
     }
 }
 
@@ -300,6 +333,8 @@ pub struct BibleApp {
     sidebar_probe: Option<crate::probe::SidebarProbe>,
     reading: crate::reading::Tracker,
     verse_menu: Option<crate::verse_menu::VerseMenu>,
+    /// The memorised passages being recalled this session, in order.
+    recall_queue: Vec<bible_core::memory::Memorised>,
     note_popover: Option<NotePopover>,
     /// The first-launch screens, until they are done.
     onboarding: Option<crate::onboarding::Onboarding>,
@@ -315,6 +350,10 @@ pub struct BibleApp {
     focus_reveal: bool,
     /// When an automatic backup was last considered (egui time).
     backup_checked: Option<f64>,
+    /// Syncing with the study library folder, when one is set.
+    study_sync: crate::study_sync::StudySync,
+    /// The last note save for each verse, so open editors can tell success from a later remote edit.
+    note_saves: HashMap<VerseRef, crate::pages::NoteSaveResult>,
     /// The day the plan reminder last showed.
     reminded: Option<i64>,
     /// The page in the main area (the reader unless a library or study page is open).
@@ -439,6 +478,7 @@ impl BibleApp {
             sidebar_probe: crate::probe::SidebarProbe::from_env(),
             reading: Default::default(),
             verse_menu: None,
+            recall_queue: Vec::new(),
             note_popover: None,
             onboarding,
             import_sheet: None,
@@ -448,6 +488,8 @@ impl BibleApp {
             focus: false,
             focus_reveal: false,
             backup_checked: None,
+            study_sync: Default::default(),
+            note_saves: HashMap::new(),
             pages: Default::default(),
             object_view: Default::default(),
             object_rect: None,
@@ -475,7 +517,8 @@ impl BibleApp {
 
     pub fn columns(&self) -> Vec<String> {
         let mut cols = vec![self.settings.translation.clone()];
-        if self.settings.parallel_on {
+        // Recalling shows one column, so another translation can't give the passage away.
+        if self.settings.parallel_on && self.reader.recall.is_none() {
             for id in &self.settings.parallel {
                 if cols.len() < 4 && !cols.contains(id) && self.library.contains(id) {
                     cols.push(id.clone());
@@ -603,6 +646,33 @@ impl BibleApp {
             if typing {
                 return;
             }
+            // Recalling, the reader's single keys reveal the passage.
+            if let Some(recall) = &self.reader.recall
+                && !picker
+            {
+                use crate::reader::recall::Step;
+                let done = recall.done();
+                key(Modifiers::SHIFT, Key::Space, Action::Recall(Step::PreviousPhrase));
+                key(Modifiers::NONE, Key::Space, Action::Recall(Step::NextPhrase));
+                key(Modifiers::NONE, Key::ArrowRight, Action::Recall(Step::NextWord));
+                key(Modifiers::NONE, Key::ArrowLeft, Action::Recall(Step::PreviousWord));
+                key(Modifiers::NONE, Key::Escape, Action::EndRecall);
+                if recall.unavailable() {
+                    key(Modifiers::NONE, Key::Enter, Action::SkipRecall);
+                }
+                if done {
+                    key(Modifiers::NONE, Key::Enter, Action::RecallGrade(None));
+                    for (g, k) in bible_core::memory::Grade::ALL.into_iter().zip([
+                        Key::Num1,
+                        Key::Num2,
+                        Key::Num3,
+                        Key::Num4,
+                    ]) {
+                        key(Modifiers::NONE, k, Action::RecallGrade(Some(g)));
+                    }
+                }
+                return;
+            }
             // Copying works with the book picker open; the reader's single keys wait for it.
             for (c, a) in bindings.iter().filter(|(c, a)| *a == Action::Copy || !(c.is_command() || picker)) {
                 key(c.modifiers(), c.key, a.clone());
@@ -633,6 +703,34 @@ impl BibleApp {
             key(Modifiers::NONE, Key::Num0, Action::Highlight(None));
             key(Modifiers::NONE, Key::Backspace, Action::Highlight(None));
         });
+    }
+
+    /// Recalls the session's passage `i` in the reader, in the translation being read.
+    fn start_recall(&mut self, i: usize) {
+        let Some(m) = self.recall_queue.get(i).cloned() else { return };
+        self.pages.open(crate::pages::Page::Reader);
+        self.reader.set_selection(None);
+        let (first, last) = (m.first, m.last);
+        self.reader.recall = Some(crate::reader::recall::Recall::new(m, i + 1, self.recall_queue.len()));
+        self.reader.jump_centered(first.chapter_idx(), first.verse, last.verse, false);
+    }
+
+    /// Recalls the session's passage `i`, or past its last, ends the session.
+    fn next_recall(&mut self, ctx: &egui::Context, i: usize) {
+        if i < self.recall_queue.len() {
+            self.start_recall(i);
+            return;
+        }
+        let mut firsts: Vec<_> = self.recall_queue.iter().map(|m| m.first).collect();
+        firsts.sort();
+        firsts.dedup();
+        let n = firsts.len();
+        self.apply_one(ctx, Action::EndRecall);
+        match n {
+            0 => {}
+            1 => self.toast(ctx, "Recalled 1 passage"),
+            n => self.toast(ctx, format!("Recalled {n} passages")),
+        }
     }
 
     fn apply(&mut self, ctx: &egui::Context, actions: Vec<Action>) {
@@ -673,6 +771,21 @@ impl BibleApp {
     }
 
     fn apply_one(&mut self, ctx: &egui::Context, a: Action) {
+        // Going somewhere else ends a recall.
+        if self.reader.recall.is_some()
+            && matches!(
+                a,
+                Action::Jump { .. }
+                    | Action::OpenLink(_)
+                    | Action::Back
+                    | Action::Forward
+                    | Action::PrevChapter
+                    | Action::NextChapter
+                    | Action::OpenPage(_)
+            )
+        {
+            self.apply_one(ctx, Action::EndRecall);
+        }
         match a {
             Action::Jump { chapter, verse, flash } => {
                 self.pages.open(crate::pages::Page::Reader);
@@ -821,6 +934,96 @@ impl BibleApp {
                 let v = self.selection_or_location()[0];
                 self.apply_one(ctx, Action::EditNote(v));
             }
+            Action::Memorise | Action::StopMemorising => {
+                let refs = self.selection_or_location();
+                let (first, last) = (refs[0], *refs.last().unwrap_or(&refs[0]));
+                let reference = |a: VerseRef, b: VerseRef| {
+                    if a == b { a.to_string() } else { format!("{a}–{}", b.verse) }
+                };
+                // Passages the selection touches are never reset. Stopping deletes their history,
+                // so only the verse menu's Stop Memorising does it, never a stray M.
+                let memorised: Vec<_> = self.study.memorised_in(first, last).into_iter().cloned().collect();
+                let names = memorised.iter().map(|m| m.reference()).collect::<Vec<_>>().join(", ");
+                let result = match (a, memorised.is_empty()) {
+                    (Action::StopMemorising, false) => memorised
+                        .iter()
+                        .try_for_each(|m| self.study.forget(m.first))
+                        .map(|()| format!("Stopped memorising {names}")),
+                    (_, false) => Ok(format!("Already memorising {names}")),
+                    (_, true) => self
+                        .study
+                        .memorise(first, last, &self.settings.translation)
+                        .map(|()| format!("Memorising {}", reference(first, last))),
+                };
+                match result {
+                    Ok(msg) => self.toast_keyed(ctx, format!("memorise {first}"), msg),
+                    Err(e) => self.toast(ctx, format!("Couldn't save: {e:#}")),
+                }
+            }
+            Action::StartRecall => {
+                let due: Vec<_> = self.study.due(crate::time::end_of_today()).into_iter().cloned().collect();
+                self.recall_queue = if due.is_empty() {
+                    // Nothing due: practise them all early, soonest due first.
+                    let all: Vec<_> = self.study.memorised().into_iter().cloned().collect();
+                    if all.is_empty() {
+                        self.toast(ctx, "Select verses and press M to memorise them");
+                        return;
+                    }
+                    self.toast(ctx, "Nothing is due, so this is extra practice");
+                    all
+                } else {
+                    due
+                };
+                // Back returns to where you were reading.
+                self.history.push(self.here());
+                self.start_recall(0);
+            }
+            Action::Recall(step) => {
+                if let Some(r) = &mut self.reader.recall {
+                    r.step(step);
+                }
+            }
+            Action::RecallGrade(grade) => {
+                let Some(r) = &self.reader.recall else { return };
+                if !r.done() {
+                    return;
+                }
+                let (first, index, grade) =
+                    (r.passage.first, r.index, grade.unwrap_or(bible_core::memory::Grade::Good));
+                // Erased or replaced (by an import, say) since the recall began: nothing to grade.
+                if self.study.memorised_at(first).is_none_or(|m| (m.first, m.last) != (first, r.passage.last))
+                {
+                    self.apply_one(ctx, Action::EndRecall);
+                    return;
+                }
+                if let Err(e) = self.study.review(first, grade, bible_core::study::now()) {
+                    // Stays on the passage, to grade again.
+                    self.toast(ctx, format!("Couldn't save: {e:#}"));
+                    return;
+                }
+                // Again stays due: it comes back at the end of this session.
+                if grade == bible_core::memory::Grade::Again
+                    && let Some(m) = self.study.memorised_at(first)
+                {
+                    self.recall_queue.push(m.clone());
+                }
+                self.next_recall(ctx, index);
+            }
+            Action::SkipRecall => {
+                let Some(r) = &self.reader.recall else { return };
+                if !r.unavailable() {
+                    return;
+                }
+                // Dropped from this session only: it stays due.
+                let index = r.index - 1;
+                self.recall_queue.remove(index);
+                self.next_recall(ctx, index);
+            }
+            Action::EndRecall => {
+                self.reader.recall = None;
+                self.recall_queue.clear();
+            }
+            Action::ToggleRecallHints => self.settings.recall_letters = !self.settings.recall_letters,
             Action::PinBook(b) => self.settings.pin_book(b),
             Action::UnpinBook(b) => self.settings.unpin_book(b),
             Action::ToggleBookmark => {
@@ -984,10 +1187,23 @@ impl BibleApp {
                 Err(e) => self.toast(ctx, format!("{e:#}")),
             },
             Action::OpenPage(page) => self.pages.open(page),
-            Action::SaveNote(v, body) => {
-                if let Err(e) = self.study.set_note(v, &body) {
-                    self.toast(ctx, format!("Couldn't save note: {e:#}"));
-                }
+            Action::SaveNote(v, body, base) => {
+                let ok = match self.study.set_note_over(v, &body, &base) {
+                    Ok(true) => {
+                        self.toast(
+                            ctx,
+                            "This note was also edited on another device. Both versions are kept in Settings › Data."
+                                .to_string(),
+                        );
+                        true
+                    }
+                    Ok(false) => true,
+                    Err(e) => {
+                        self.toast(ctx, format!("Couldn't save note: {e:#}"));
+                        false
+                    }
+                };
+                self.note_saves.insert(v, crate::pages::NoteSaveResult { body, ok });
             }
             Action::StartPlan(id) => {
                 let today = crate::time::day_start(bible_core::study::now());
@@ -1021,7 +1237,22 @@ impl BibleApp {
                 }
             }
             Action::RevealDataDir => reveal(&self.data_dir),
-            Action::TextFormat => egui::Popup::open_id(ctx, Id::new(TEXT_POPUP)),
+            Action::ChooseStudyLibrary => self.choose_study_library(ctx),
+            Action::StopStudyLibrary => {
+                self.settings.study_library = None;
+                self.toast(ctx, "Stopped syncing. Your study stays here, and in the folder.");
+            }
+            Action::SyncStudyLibrary => self.study_sync.sync_soon(),
+            Action::UseConflict(v, stamp) => match self.study.use_conflict(v, &stamp) {
+                Ok(_) => self.reader.invalidate(),
+                Err(e) => self.toast(ctx, format!("Couldn't use that version: {e:#}")),
+            },
+            Action::DismissConflict(v, stamp) => {
+                if let Err(e) = self.study.dismiss_conflict(v, &stamp) {
+                    self.toast(ctx, format!("Couldn't dismiss it: {e:#}"));
+                }
+            }
+            Action::TextFormat => egui::Popup::open_id(ctx, Id::unique(TEXT_POPUP)),
             Action::ToggleFocus => {
                 self.focus = !self.focus;
                 if self.focus {
@@ -1084,6 +1315,16 @@ impl BibleApp {
                 }
             }
             "select" => self.reader.set_selection(verse()),
+            // Memorise a passage ("rom 8:38-39"), then recall what is due.
+            "memorise" => {
+                if let Some(r) = bible_core::reference::parse(arg) {
+                    let first = r.verse_ref();
+                    let last = VerseRef { verse: r.verse_end.unwrap_or(first.verse), ..first };
+                    self.reader.select_range(first, last);
+                    actions.push(Action::Memorise);
+                }
+            }
+            "recall" => actions.push(Action::StartRecall),
             "palette" => self.palette = Some(CommandPalette::with_query(arg)),
             "search" => actions.push(Action::OpenSearch(Some(arg.to_string()))),
             "step" => actions.push(Action::SearchStep(arg.parse().unwrap_or(1))),
@@ -1283,8 +1524,46 @@ impl BibleApp {
         let every = if self.settings.backup_weekly { 7 * 86_400 } else { 86_400 };
         let due = last_backup(&self.data_dir).is_none_or(|(at, _)| bible_core::study::now() - at >= every);
         let (h, n, b) = self.study.counts();
-        if due && h + n + b > 0 {
+        if due && h + n + b + self.study.memorised().len() > 0 {
             let _ = self.backup_now();
+        }
+    }
+
+    /// Study Library (beta): asks for the folder to keep the study in. A folder with other things
+    /// in it gets a `Bible Study Library` folder of its own inside.
+    fn choose_study_library(&mut self, ctx: &egui::Context) {
+        let mut dialog = rfd::FileDialog::new().set_title("Choose a folder for your study library");
+        if let Some(dir) = icloud_drive() {
+            dialog = dialog.set_directory(dir);
+        }
+        let Some(picked) = dialog.pick_folder() else { return };
+        match study_library_in(&picked, &self.data_dir) {
+            Ok(folder) => {
+                self.settings.study_library = Some(folder.to_string_lossy().into_owned());
+                self.study_sync.sync_soon();
+                self.toast(ctx, format!("Syncing your study with {}", folder.display()));
+            }
+            Err(e) => self.toast(ctx, format!("{e:#}")),
+        }
+    }
+
+    /// Syncs with the study library folder when it's due, and shows what came in.
+    fn sync_study_library(&mut self, ctx: &egui::Context) {
+        if self.startup.frames < 10 {
+            return;
+        }
+        let folder = self.settings.study_library.clone();
+        let Some(report) = self.study_sync.tick(ctx, folder.as_deref(), &mut self.study) else { return };
+        if report.merged.changed() > 0 {
+            self.reader.invalidate();
+        }
+        if report.merged.conflicts > 0 {
+            let n = report.merged.conflicts;
+            let what = if n == 1 { "A note was" } else { "Notes were" };
+            self.toast(
+                ctx,
+                format!("{what} edited on two devices. Both versions are kept in Settings › Data."),
+            );
         }
     }
 
@@ -1316,7 +1595,7 @@ impl BibleApp {
         self.reminded = Some(today);
         let due = self.study.plans().into_iter().filter(|p| p.finished.is_none()).find_map(|p| {
             let plan = bible_core::plans::get(&p.id)?;
-            let day = ((today - p.started) / 86_400 + 1) as usize;
+            let day = (crate::time::days_between(p.started, today) + 1) as usize;
             let reads = self.study.plan_reads(&p.id);
             let todo = (0..plan.day(day).len()).any(|i| !reads.contains(&(day as u16, i as u8)));
             todo.then(|| {
@@ -1457,7 +1736,7 @@ impl BibleApp {
                 p,
                 &mut self.pages.query,
                 placeholder,
-                Id::new("page-search"),
+                Id::unique("page-search"),
             );
             if cleared || (field.has_focus() && ui.input(|i| i.key_pressed(Key::Escape))) {
                 self.pages.query.clear();
@@ -1512,7 +1791,7 @@ impl BibleApp {
                 items.push(tools_rect);
                 tools_rect.left()
             };
-            let field_id = Id::new("toolbar-search");
+            let field_id = Id::unique("toolbar-search");
             let (field, cleared) =
                 widgets::search_field(ui, search, p, &mut self.sidebar.query, "Search", field_id);
             if focus_field {
@@ -1542,7 +1821,7 @@ impl BibleApp {
             if resp[0].clicked() {
                 actions.push(Action::OpenSearch(None));
             }
-            if egui::Popup::is_id_open(ui.ctx(), Id::new(MORE_POPUP)) {
+            if egui::Popup::is_id_open(ui.ctx(), Id::unique(MORE_POPUP)) {
                 // Pressed while its menu is open.
                 let b = resp[1].rect;
                 ui.painter().rect_filled(b, CAPSULE_HEIGHT / 2.0, p.fill);
@@ -1557,7 +1836,7 @@ impl BibleApp {
         if let Some((anchor, toggles)) = text_anchor {
             let open = (toggles && anchor.clicked()).then_some(egui::SetOpenCommand::Toggle);
             egui::Popup::menu(&anchor)
-                .id(Id::new(TEXT_POPUP))
+                .id(Id::unique(TEXT_POPUP))
                 .open_memory(open)
                 .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                 .show(|ui| {
@@ -1580,7 +1859,7 @@ impl BibleApp {
                 .unwrap_or_else(|| c.book().ref_name().into())
         };
         let title = format!("{book_name} {}", c.chapter());
-        let abbrev = if self.settings.parallel_on {
+        let abbrev = if self.columns().len() > 1 {
             self.columns()
                 .iter()
                 .filter_map(|id| self.library.get(id).map(|e| e.meta.abbrev.clone()))
@@ -1644,7 +1923,7 @@ impl BibleApp {
         let ctx = ui.ctx().clone();
         let near = self.focus_reveal
             || ctx.input(|i| i.pointer.hover_pos().is_some_and(|q| q.y < full.top() + 64.0));
-        let t = ctx.animate_bool_with_time(Id::new("focus-reveal"), near, theme::motion::BASE_MS / 1000.0);
+        let t = ctx.animate_bool_with_time(Id::unique("focus-reveal"), near, theme::motion::BASE_MS / 1000.0);
         if t > 0.0 {
             let chord = crate::keymap::ALL
                 .iter()
@@ -1760,7 +2039,7 @@ impl BibleApp {
             let font = theme::text::UI_STRONG.font();
             let g = ui.painter().layout_no_wrap(meta.abbrev.clone(), font, p.ink);
             let pick = egui::Rect::from_min_size(egui::pos2(x, top), vec2(g.size().x + 4.0 + 12.0, 16.0));
-            let resp = ui.interact(pick.expand(4.0), Id::new(("column-head", i)), Sense::click());
+            let resp = ui.interact(pick.expand(4.0), Id::unique(("column-head", i)), Sense::click());
             ui.painter().galley(egui::pos2(x, top + 8.0 - g.size().y / 2.0), g, p.ink);
             crate::icons::chevron_down(
                 ui.painter(),
@@ -1821,7 +2100,7 @@ impl BibleApp {
         x += lw + 8.0;
         // The stepper: the upper half goes back, the lower half on.
         let b = egui::Rect::from_min_size(egui::pos2(x, cy - 12.0), vec2(24.0, 24.0));
-        let resp = ui.interact(b, Id::new("result-step"), Sense::click());
+        let resp = ui.interact(b, Id::unique("result-step"), Sense::click());
         if let Some(fill) = widgets::hover_fill(ui, &resp, p, false) {
             ui.painter().circle_filled(b.center(), 12.0, fill);
         }
@@ -1865,7 +2144,7 @@ impl BibleApp {
             Some((crate::icons::sidebar, sidebar, chord("sidebar"), Action::ToggleSidebar)),
             Some((crate::icons::expand, "Focus Mode", chord("focus"), Action::ToggleFocus)),
         ];
-        let id = Id::new(MORE_POPUP);
+        let id = Id::unique(MORE_POPUP);
         if std::mem::take(&mut self.open_more) {
             egui::Popup::open_id(ui.ctx(), id);
         }
@@ -2037,7 +2316,7 @@ impl BibleApp {
         // (area id, text, is the retryable error, opacity)
         let mut msgs: Vec<(Id, String, bool, f32)> = Vec::new();
         if let Some(o) = self.offline.as_ref().filter(|o| !o.dismissed) {
-            msgs.push((Id::new("toast-offline"), o.toast(&self.library), true, 1.0));
+            msgs.push((Id::unique("toast-offline"), o.toast(&self.library), true, 1.0));
         }
         msgs.extend(self.toasts.iter().map(|t| {
             let left = TOAST_SECS - (now - t.at);
@@ -2045,11 +2324,11 @@ impl BibleApp {
             (t.area(), t.msg.clone(), false, opacity)
         }));
         if let Some(b) = &self.busy {
-            msgs.push((Id::new("toast-busy"), b.clone(), false, 1.0));
+            msgs.push((Id::unique("toast-busy"), b.clone(), false, 1.0));
         }
         let measure = egui::Painter::new(
             ctx.clone(),
-            egui::LayerId::new(egui::Order::Tooltip, Id::new("toast-measure")),
+            egui::LayerId::new(egui::Order::Tooltip, Id::unique("toast-measure")),
             area,
         );
         let (mut retry, mut dismiss) = (false, false);
@@ -2211,7 +2490,7 @@ fn sidebar_toggle(
     let rect = egui::Rect::from_center_size(egui::pos2(centre_x, centre_y), vec2(width, CAPSULE_HEIGHT));
     let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
     ui.set_clip_rect(ui.ctx().content_rect());
-    let resp = ui.interact(rect, Id::new("sidebar-toggle"), Sense::click());
+    let resp = ui.interact(rect, Id::unique("sidebar-toggle"), Sense::click());
     widgets::pointer_on_hover(&ui, &resp);
     let radius = rect.height() / 2.0;
     if capsule > 0.0 {
@@ -2568,6 +2847,7 @@ impl eframe::App for BibleApp {
                     settings: &self.settings,
                     query: &query,
                     toolbar: self.chrome.height,
+                    note_saves: &self.note_saves,
                 };
                 self.pages.show(ui, full, &env, &mut actions);
                 if self.pages.page == crate::pages::Page::Ark {
@@ -2577,7 +2857,7 @@ impl eframe::App for BibleApp {
                     ));
                 }
                 let material = ctx.animate_bool_with_time(
-                    Id::new("toolbar-material"),
+                    Id::unique("toolbar-material"),
                     self.pages.scrolled,
                     theme::motion::FAST_MS / 1000.0,
                 );
@@ -2621,6 +2901,8 @@ impl eframe::App for BibleApp {
                 online_generation: &self.online_gen,
                 toolbar: top,
                 resizing: self.sidebar_motion.moving(),
+                recall_letters: self.settings.recall_letters,
+                reduce_motion: self.settings.reduce_motion,
             };
             let mut reader_ui = ui.new_child(egui::UiBuilder::new().max_rect(reader_rect));
             if let (Some(state), Some(retrying)) = (&self.offline, offline) {
@@ -2678,7 +2960,7 @@ impl eframe::App for BibleApp {
                 }
             }
             let material = ctx.animate_bool_with_time(
-                Id::new("toolbar-material"),
+                Id::unique("toolbar-material"),
                 self.reader.under_toolbar && band == 0.0,
                 theme::motion::FAST_MS / 1000.0,
             );
@@ -2737,6 +3019,7 @@ impl eframe::App for BibleApp {
             }
         }
         if let Some(s) = &mut self.settings_ui {
+            s.sync = self.study_sync.view();
             let tx = self.task_tx.clone();
             let mut import: Option<(PathBuf, Option<String>)> = None;
             let open = s.show(
@@ -2800,6 +3083,7 @@ impl eframe::App for BibleApp {
         self.shortcuts_help(&ctx, &mut actions);
         self.plan_reminder(&ctx);
         self.auto_backup(&ctx);
+        self.sync_study_library(&ctx);
         self.toasts(&ctx);
         self.object_view(&ctx, frame, &mut actions);
         self.end_frame(&ctx, frame, frame_start, actions);

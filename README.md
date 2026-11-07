@@ -73,6 +73,15 @@ typeset, searchable as you type, with highlights, notes and bookmarks kept on yo
 - Notes and bookmarks show in the margin; the Study sidebar lists everything.
 - Export to Markdown (⌘E) or JSON (⌘⇧E); JSON imports back.
 
+**Memorising** (an experiment)
+- Select verses and press M to memorise them; a mark in the margin shows a passage being learnt.
+- Memory in the sidebar recalls the passages due, each in place in the chapter: its words hidden
+  (first letters as hints, or nothing), revealed word by word as you drag across it, swipe with
+  two fingers or click (Space shows a phrase). Then grade it: each grade shows when the passage
+  would come back, as [FSRS](https://github.com/open-spaced-repetition/awesome-fsrs/wiki/ABC-of-FSRS)
+  schedules it. Again brings it back in the same session; with nothing due, Memory is extra
+  practice.
+
 **Translations**
 - Instant switching (⌘1…⌘9 or the toolbar), parallel columns (⌘⇧P) aligned verse by verse, and a
   compare view showing one verse in every installed translation.
@@ -176,6 +185,8 @@ chapter by chapter, and appear in parallel and compare views as their chapters l
 | Drag, ⇧-click | Choose words, extend them |
 | 1–6, 0 | Highlight colour, remove highlight |
 | N · B or ⌘D · ⌘C · ⇧⌘C · C | Note · bookmark · copy · copy with reference · compare |
+| M | Memorise the selected verses (stop from the verse menu) |
+| Space · → ← · ⏎ or 1–4 · Esc | While recalling: next phrase · word forward, back · grade (⏎ is Good) · back to reading |
 | ⌘1…⌘9 | Switch translation |
 | ⌘⇧P | Parallel translations |
 | ⌘L · ⌘R · ⌘⇧L | Verse-per-line · red letters · theme |
@@ -325,7 +336,7 @@ bible-rs search "love one another" # prints the query time
 
 ## Building
 
-Requires Rust 1.95+, the minimum egui 0.36 supports.
+Requires Rust 1.95+, the minimum egui 0.37 supports.
 
 ```sh
 # Linux needs: libxkbcommon-dev libgl1-mesa-dev libwayland-dev libx11-dev
@@ -447,4 +458,4 @@ Code: MIT ([LICENSE](LICENSE)). Bundled translations: public domain ([LICENSES/]
 Fonts: Literata and Inter, SIL Open Font License 1.1. The object specs in `objects/` and the images
 rendered from their 3D models are CC BY 4.0 ([objects/LICENSE](objects/LICENSE)). Credit them as:
 
-> Ark of the Covenant specs and 3D models © 2026 Micky (github.com/michaelshimeles) / bible-rs contributors, licensed CC BY 4.0, https://github.com/michaelshimeles/bible-rs
+> Ark of the Covenant specs and 3D models © 2026 Micky (github.com/michaelshimeles) / bible-rs contributors, licensed CC BY 4.0, https://github.com/michaelshimeles/bible

@@ -15,7 +15,6 @@ use crate::widgets::{self, BadgeKind, Button, Kind, css_baseline, flow, paint_ru
 const TIMELINE: f32 = 584.0;
 const ROW: f32 = 84.0;
 const CARD: f32 = 320.0;
-const DAY: i64 = 86_400;
 
 pub struct State {
     /// 0 today, 1 the last seven days, 2 everything.
@@ -45,7 +44,7 @@ impl State {
         let now = bible_core::study::now();
         let today = time::day_start(now);
         super::title(&painter, p, left, top, "History", "Everything you’ve read, newest first");
-        let week = env.study.reading_since(today - 6 * DAY);
+        let week = env.study.reading_since(time::days_before(today, 6));
         if env.study.reading_since(0).is_empty() {
             let empty = Empty {
                 glyph: icons::history,
@@ -65,15 +64,20 @@ impl State {
 
         // Header actions: the range, and Clear….
         let cy = top + 26.0 + 16.0;
-        let (clear, resp) =
-            Button::new(Kind::Plain, "Clear…").show_right(ui, p, right, cy, ui.id().with("clear-history"));
+        let (clear, resp) = Button::new(Kind::Plain, "Clear…").show_right(
+            ui,
+            p,
+            right,
+            cy,
+            ui.scope_id().with("clear-history"),
+        );
         crate::menu::popup(&resp, p).show(|ui| {
             ui.set_min_width(200.0);
             if ui.button("Clear Today").clicked() {
                 actions.push(Action::ClearReading(today));
             }
             if ui.button("Clear the Last 7 Days").clicked() {
-                actions.push(Action::ClearReading(today - 6 * DAY));
+                actions.push(Action::ClearReading(time::days_before(today, 6)));
             }
             crate::menu::separator(ui);
             if ui.button("Clear All History").clicked() {
@@ -84,7 +88,7 @@ impl State {
             ui,
             p,
             pos2(clear.left() - 8.0, cy),
-            ui.id().with("history-range"),
+            ui.scope_id().with("history-range"),
             &["Today", "Week", "All"],
             self.range,
         );
@@ -95,7 +99,7 @@ impl State {
         // The timeline.
         let since = match self.range {
             0 => today,
-            1 => today - 6 * DAY,
+            1 => time::days_before(today, 6),
             _ => 0,
         };
         let q = env.query.trim().to_lowercase();
@@ -118,7 +122,7 @@ impl State {
                 let l = time::local(s.started);
                 let label = if d == today {
                     format!("Today · {}", time::weekday(l.weekday))
-                } else if d >= today - 6 * DAY {
+                } else if d >= time::days_before(today, 6) {
                     time::weekday(l.weekday).to_string()
                 } else {
                     format!("{} · {}", time::weekday(l.weekday), time::short_date(s.started))
@@ -162,7 +166,7 @@ impl State {
     ) {
         let painter = ui.painter().clone();
         let (x0, y) = (row.left(), row.top());
-        let resp = ui.interact(row, ui.id().with(("session", s.started)), Sense::click());
+        let resp = ui.interact(row, ui.scope_id().with(("session", s.started)), Sense::click());
         text(&painter, x0 + 48.0, y, 20.0, &time::clock(s.started), theme::ui_medium(12.0), p.ink_3, true);
         // The rail: a dot, and a line down to the next session.
         painter.circle_filled(pos2(x0 + 68.0, y + 10.5), 4.5, p.accent);
@@ -232,7 +236,7 @@ impl State {
         let days: Vec<(i64, Vec<&ReadingSession>)> = (0..7)
             .rev()
             .map(|k| {
-                let d = today - k * DAY;
+                let d = time::days_before(today, k);
                 (d, week.iter().filter(|s| time::day_start(s.started) == d).collect())
             })
             .collect();
