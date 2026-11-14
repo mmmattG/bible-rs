@@ -312,8 +312,71 @@ final class BibleUITests: XCTestCase {
         start.press(forDuration: 0.1, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
     }
 
+    func testMemoryListsPassagesByReferenceAndShowsRecallChanceOnceGraded() {
+        memorise("John 1:1")
+        memorise("John 1:3")
+        openMemory()
+        XCTAssertEqual(app.segmentedControls.buttons["Fading"].isSelected, true, "the default order")
+        let third = app.buttons["memory-John 1:3"]
+        XCTAssertTrue(third.waitForExistence(timeout: 3))
+        XCTAssertTrue(third.label.contains("Not recalled yet"), third.label)
+        XCTAssertFalse(third.label.contains("All things"), "the list gave the passage away")
+
+        third.tap()
+        XCTAssertTrue(app.staticTexts["John 1:3"].waitForExistence(timeout: 3), "recall starts at the passage tapped")
+        XCTAssertFalse(app.staticTexts["1 of 2"].exists, "it goes down the list from there")
+        dragRecallSlider(to: 1)
+        let good = app.buttons["grade-Good"]
+        XCTAssertTrue(good.waitForExistence(timeout: 3))
+        XCTAssertEqual(good.label, "Good", "no date on the grade")
+        good.tap()
+        XCTAssertTrue(app.staticTexts["Recalled 1 passage"].waitForExistence(timeout: 3))
+
+        openMemory()
+        let first = app.buttons["memory-John 1:1"]
+        XCTAssertTrue(first.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["memory-John 1:3"].label.contains("100%"))
+        XCTAssertLessThan(first.frame.minY, app.buttons["memory-John 1:3"].frame.minY, "never recalled leads")
+
+        app.buttons["recall"].tap()
+        XCTAssertTrue(app.staticTexts["1 of 2"].waitForExistence(timeout: 3))
+        dragRecallSlider(to: 1)
+        XCTAssertTrue(good.waitForExistence(timeout: 3))
+        good.tap()
+        XCTAssertTrue(app.staticTexts["2 of 2"].waitForExistence(timeout: 3))
+        dragRecallSlider(to: 1)
+        XCTAssertTrue(good.waitForExistence(timeout: 3))
+        good.tap()
+        XCTAssertTrue(app.staticTexts["John 1:3 was at 100%"].waitForExistence(timeout: 3))
+
+        openMemory()
+        app.segmentedControls.buttons["Bible order"].tap()
+        XCTAssertTrue(app.staticTexts["John"].waitForExistence(timeout: 3), "grouped under the book")
+        XCTAssertTrue(app.buttons["memory-John 1:1"].label.contains("1:1"))
+        XCTAssertLessThan(
+            app.buttons["memory-John 1:1"].frame.minY, app.buttons["memory-John 1:3"].frame.minY)
+    }
+
+    private func openMemory() {
+        let study = app.buttons["study"]
+        XCTAssertTrue(study.waitForExistence(timeout: 3))
+        study.tap()
+        let memory = app.buttons["memory"]
+        XCTAssertTrue(memory.waitForExistence(timeout: 3))
+        memory.tap()
+    }
+
     private func startRecall() {
-        let first = verse("John 1:1")
+        memorise("John 1:1")
+        openMemory()
+        let recall = app.buttons["recall"]
+        XCTAssertTrue(recall.waitForExistence(timeout: 3))
+        recall.tap()
+        XCTAssertTrue(recallSlider.waitForExistence(timeout: 3))
+    }
+
+    private func memorise(_ reference: String) {
+        let first = verse(reference)
         XCTAssertTrue(first.waitForExistence(timeout: 3))
         first.tap()
         let clear = app.buttons["Clear selection"]
@@ -325,11 +388,6 @@ final class BibleUITests: XCTestCase {
         memorise.tap()
         let saved = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: clear)
         XCTAssertEqual(XCTWaiter.wait(for: [saved], timeout: 3), .completed)
-        app.buttons["study"].tap()
-        let recall = app.buttons["recall"]
-        XCTAssertTrue(recall.waitForExistence(timeout: 3))
-        recall.tap()
-        XCTAssertTrue(recallSlider.waitForExistence(timeout: 3))
     }
 
     private func swipeReaderRight() {

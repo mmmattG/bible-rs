@@ -381,9 +381,13 @@ bible-rs open bible://jhn.3.16-18
 `apps/ios` is the iPhone app (iPad runs it too): SwiftUI around the same Rust core, through
 UniFFI (`crates/ffi`). It has the Mac's typesetting, themes and colours. You can scroll through all
 1,189 chapters, jump to a reference (`jn 3:16`), search as you type, and highlight, annotate,
-bookmark, copy or share verses. Memorising works as on the Mac: Memorise in the selection bar,
-then Study › Memory to recall what's due. Swipe right on the reader, or tap the current reference,
-to open the book drawer. Choose a chapter to navigate; swipe left or tap outside to close it.
+bookmark, copy or share verses. Swipe right on the reader, or tap the current reference, to open
+the book drawer. Choose a chapter to navigate; swipe left or tap outside to close it.
+
+Memorising starts as on the Mac: Memorise in the selection bar. Study › Memory then lists every
+passage by reference, each with the estimated chance you'd recall it now, in one of two orders:
+Fading (the least likely first) or Bible order. Recall goes down the list from the top, or from
+the passage you tap. Nothing is ever due, so you can recall any passage whenever you like.
 
 Recall uses next-word taps and a passage reveal slider. The slider can reveal or hide text,
 including after the whole passage is shown. Page swipes open Books.

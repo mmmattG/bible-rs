@@ -47,8 +47,8 @@ struct StudyView: View {
             }
             .safeAreaInset(edge: .top) {
                 VStack(spacing: 8) {
-                    if !store.memorisedPassages.isEmpty {
-                        RecallRow(theme: theme)
+                    if store.memorisedCount > 0 {
+                        MemoryRow(theme: theme)
                     }
                     Picker("Show", selection: $kind) {
                         Text("Bookmarks").tag(StudyKind.bookmarks)

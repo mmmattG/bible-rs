@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use crate::books::{BookId, ChapterIdx, VerseRef};
 use crate::highlight;
 pub use crate::highlight::{Highlight, TextSpan};
-use crate::memory::{Grade, Memorised, Review, Schedule};
+use crate::memory::{Grade, Memorised, MemoryOrder, Review, Schedule};
 use crate::sync::{
     self, BookmarkChange, HighlightPart, HighlightsChange, Hlc, MemoryChange, MemoryReviewChange, NoteChange,
     NotePick, NoteVersion, Pick, PlanChange, PlanReadChange, VerseKey, lww,
@@ -1477,6 +1477,20 @@ impl StudyStore {
         let mut v: Vec<&Memorised> = self.memory.values().collect();
         v.sort_by_key(|m| (m.schedule.due, m.first));
         v
+    }
+
+    /// Every passage being memorised, in `order` as things stand at `now`.
+    pub fn memorised_by(&self, order: MemoryOrder, now: i64) -> Vec<&Memorised> {
+        let mut passages: Vec<&Memorised> = self.memory.values().collect();
+        if order == MemoryOrder::Fading {
+            // `None` sorts first: a passage never recalled leads. The sort is stable, so equal
+            // chances keep the Bible's order.
+            passages.sort_by(|a, b| {
+                let (a, b) = (a.schedule.recall_chance(now), b.schedule.recall_chance(now));
+                a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
+        passages
     }
 
     pub fn has_memorised(&self) -> bool {
@@ -3362,6 +3376,31 @@ mod tests {
         s.forget(v(17)).unwrap();
         assert!(StudyStore::open(&path).unwrap().memorised().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn memorised_passages_list_by_fading_or_in_bible_order() {
+        const DAY: i64 = 86_400;
+        let mut s = StudyStore::open_in_memory().unwrap();
+        let (psalm, john, romans) = (
+            VerseRef::new(BookId(18), 23, 1),
+            VerseRef::new(BookId(42), 3, 16),
+            VerseRef::new(BookId(44), 8, 28),
+        );
+        for v in [romans, psalm, john] {
+            s.memorise(v, v, "kjv").unwrap();
+        }
+        let start = now();
+        s.review(psalm, Grade::Good, start).unwrap();
+        s.review(john, Grade::Good, start + 5 * DAY).unwrap();
+        let today = start + 6 * DAY;
+        let firsts = |order| s.memorised_by(order, today).iter().map(|m| m.first).collect::<Vec<_>>();
+        assert_eq!(firsts(MemoryOrder::Bible), [psalm, john, romans]);
+        assert_eq!(
+            firsts(MemoryOrder::Fading),
+            [romans, psalm, john],
+            "never recalled, then the longest ago"
+        );
     }
 
     #[test]

@@ -207,6 +207,14 @@ verses, like a highlight, rather than a separate flashcard app inside this one.
   session (and stays due if you stop). FSRS-6's same-day terms then schedule the next recall from
   how it went. With nothing due, recalling practises every passage early; FSRS counts an early
   recall for less, and recalling it well never brings it back sooner.
+- **The phone has a collection, not a queue.** Recalling is the feature, and a list of what is
+  due turns it into a chore with a backlog. So the iPhone lists every passage with FSRS's estimate
+  of the chance it would be recalled now, and never mentions a date. Sorting by that estimate
+  (Fading) gives much the same order a due queue would, without the debt; Bible order puts
+  neighbouring passages together, so they are recalled in sequence. Recalling a passage that is
+  still fresh is fine: FSRS counts it for less. The list shows references only, as the text would
+  give the passage away, and the estimate appears after a grade rather than before, so it can't
+  sway the grade. The schedule is still kept, and the Mac still uses it.
 - **The reveal** (`memory::Reveal`) gives every character a place along one line, so a reveal
   carries across line breaks on its own. A character fades in over the five places after its own
   (a soft edge), and each word and phrase is followed by a pause as long as that edge, so a reveal

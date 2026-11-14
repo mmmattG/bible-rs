@@ -338,14 +338,16 @@ fn memorising_and_recall_plans() {
         (m.reference.as_str(), m.translation.as_str(), m.chapter_index),
         ("John 3:16–17", "kjv", index("jn 3"))
     );
-    assert_eq!(bible.due_passages(bible_core::study::now()).len(), 1);
-    assert_eq!(bible.grade_labels(JOHN_3_16), ["today", "1 day", "2 days", "8 days"]);
+    assert_eq!(m.recall_chance, None, "not recalled yet");
     let marks = bible.marks("kjv".into(), index("jn 3"));
     assert!(marks.iter().any(|m| m.verse == 16 && m.memorised), "the passage's first verse is marked");
     assert!(!marks.iter().any(|m| m.verse == 17 && m.memorised));
     bible.review(JOHN_3_16, RecallGrade::Good).unwrap();
-    assert!(bible.due_passages(bible_core::study::now()).is_empty());
-    assert_eq!(bible.memorised_passages().len(), 1);
+    for order in [MemoryOrder::Fading, MemoryOrder::Bible] {
+        let passages = bible.memorised_passages(order);
+        assert_eq!(passages.len(), 1);
+        assert_eq!(passages[0].recall_chance, Some(1.0), "just recalled");
+    }
     bible.forget(JOHN_3_16).unwrap();
     assert!(bible.memorised_at(JOHN_3_16).is_none());
 
@@ -419,8 +421,9 @@ fn a_study_library_folder_carries_memorised_passages_between_devices() {
     assert_eq!((r.read, r.written), (0, 2));
     let r = mac.sync_study_library(path.clone()).unwrap();
     assert_eq!((r.read, r.changed), (1, 2));
-    assert!(mac.due_passages(bible_core::study::now()).is_empty());
-    assert_eq!(mac.memorised_passages().len(), 1);
+    let passages = mac.memorised_passages(MemoryOrder::Fading);
+    assert_eq!(passages.len(), 1);
+    assert!(passages[0].recall_chance.is_some(), "the phone's recall came across");
 
     phone.forget(JOHN_3_16).unwrap();
     let r = phone.sync_study_library(path.clone()).unwrap();
