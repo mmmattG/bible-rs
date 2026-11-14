@@ -68,6 +68,12 @@ struct JumpRequest: Equatable {
     var flash = false
 }
 
+struct RecallSeek {
+    let id: UUID
+    let run: UUID
+    let progress: Double
+}
+
 /// The memorised passages being recalled, one after another in the reader.
 struct RecallRun: Equatable {
     /// New for each passage shown, so the reader hides it afresh even when it comes round again.
@@ -82,12 +88,11 @@ struct RecallRun: Equatable {
 }
 
 enum Sheet: Identifiable, Equatable {
-    case books, search, settings, study
+    case search, settings, study
     case note(VerseRef)
 
     var id: String {
         switch self {
-        case .books: "books"
         case .search: "search"
         case .settings: "settings"
         case .study: "study"
@@ -120,6 +125,8 @@ final class Store {
     /// Bumped whenever highlights, notes or bookmarks change.
     private(set) var marksVersion = 0
     var sheet: Sheet?
+    var booksOpen = false
+    var recallSeek: RecallSeek?
     var barsHidden = false
     private(set) var toast: String?
     private(set) var recall: RecallRun?
@@ -419,6 +426,11 @@ final class Store {
         guard let passage = recall?.passage else { return }
         sheet = nil
         go(to: Int(passage.chapterIndex), verse: Int(passage.first.verse))
+    }
+
+    func seekRecall(to progress: Double) {
+        guard let recall else { return }
+        recallSeek = RecallSeek(id: UUID(), run: recall.id, progress: progress.clamped(to: 0...1))
     }
 
     func recallChanged(_ status: RecallStatus) {

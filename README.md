@@ -382,7 +382,12 @@ bible-rs open bible://jhn.3.16-18
 UniFFI (`crates/ffi`). It has the Mac's typesetting, themes and colours. You can scroll through all
 1,189 chapters, jump to a reference (`jn 3:16`), search as you type, and highlight, annotate,
 bookmark, copy or share verses. Memorising works as on the Mac: Memorise in the selection bar,
-then Study › Memory to recall what's due.
+then Study › Memory to recall what's due. Swipe right on the reader, or tap the current reference,
+to open the book drawer. Choose a chapter to navigate; swipe left or tap outside to close it.
+
+Recall uses next-word taps and a passage reveal slider. The slider can reveal or hide text,
+including after the whole passage is shown. Page swipes open Books.
+
 Parallel and compare views, import and online translations are Mac-only for now.
 
 <table>

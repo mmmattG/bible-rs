@@ -21,10 +21,11 @@ extension BibleSection {
 /// Books and chapters, and a field that takes a reference: "jn 3:16", "ps 23", "1 cor 13".
 struct BookPicker: View {
     @Environment(Store.self) private var store
-    @Environment(\.dismiss) private var dismiss
     let theme: Theme
+    let close: () -> Void
     @State private var query = ""
     @State private var open: UInt8?
+    @AccessibilityFocusState private var closeFocused: Bool
 
     var body: some View {
         @Bindable var store = store
@@ -41,6 +42,11 @@ struct BookPicker: View {
             .searchable(
                 text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Go to… (jn 3:16)"
             )
+            .scrollContentBackground(.hidden)
+            .background(Color(theme.paper))
+            .toolbarBackground(Color(theme.paper), for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(theme.colorScheme, for: .navigationBar)
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
             .onSubmit(of: .search) {
@@ -68,7 +74,11 @@ struct BookPicker: View {
                     .accessibilityIdentifier("book-layout")
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                    Button("Done") { close() }
+                        .accessibilityIdentifier("close-books")
+                        .accessibilityFocused($closeFocused)
+                        .onAppear { closeFocused = store.booksOpen }
+                        .onChange(of: store.booksOpen) { _, open in closeFocused = open }
                 }
             }
         }
@@ -79,14 +89,17 @@ struct BookPicker: View {
             let suggestions = suggestReferences(input: query, limit: 8)
             if suggestions.isEmpty {
                 Text("No book matches “\(query)”")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(theme.ink2))
+                    .listRowBackground(Color(theme.surface))
             }
             ForEach(suggestions, id: \.label) { reference in
                 Button {
                     go(reference)
                 } label: {
                     Label(reference.label, systemImage: reference.verse == nil ? "book" : "text.quote")
+                        .foregroundStyle(Color(theme.ink))
                 }
+                .listRowBackground(Color(theme.surface))
             }
         }
         .listStyle(.insetGrouped)
@@ -109,11 +122,14 @@ struct BookPicker: View {
     }
 
     private func testament(_ title: String, _ books: [BookInfo]) -> some View {
-        Section(title) {
+        Section {
             ForEach(books, id: \.index) { book in
                 row(book)
                     .id(book.index)
+                    .listRowBackground(Color(theme.surface))
             }
+        } header: {
+            Text(title).foregroundStyle(Color(theme.ink2))
         }
     }
 
@@ -130,15 +146,15 @@ struct BookPicker: View {
             HStack {
                 Text(book.name)
                     .font(.body.weight(current ? .semibold : .regular))
-                    .foregroundStyle(current ? Color(theme.accent) : .primary)
+                    .foregroundStyle(current ? Color(theme.accent) : Color(theme.ink))
                 Spacer()
                 Text(book.chapters == 1 ? "1 chapter" : "\(book.chapters)")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color(theme.ink2))
                 if book.chapters > 1 {
                     Image(systemName: "chevron.down")
                         .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Color(theme.ink3))
                         .rotationEffect(.degrees(open == book.index ? 0 : -90))
                 }
             }
@@ -153,12 +169,12 @@ struct BookPicker: View {
 
     private func go(chapter: Int) {
         store.go(to: chapter)
-        dismiss()
+        close()
     }
 
     private func go(_ reference: Reference) {
         store.go(to: reference)
-        dismiss()
+        close()
     }
 }
 
