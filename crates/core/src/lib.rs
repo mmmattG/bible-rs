@@ -5,6 +5,8 @@ pub mod books;
 pub mod bundled;
 pub mod content;
 pub mod copy;
+#[cfg(feature = "native")]
+pub mod folder;
 pub mod format;
 pub mod highlight;
 #[cfg(feature = "import")]
@@ -12,6 +14,7 @@ pub mod import;
 #[cfg(feature = "native")]
 pub mod library;
 pub mod link;
+pub mod memory;
 pub mod model;
 pub mod nlt_html;
 #[cfg(feature = "native")]
@@ -22,6 +25,7 @@ pub mod search;
 #[cfg(feature = "native")]
 pub mod secrets;
 pub mod study;
+pub mod sync;
 pub mod usfm;
 pub mod xml;
 

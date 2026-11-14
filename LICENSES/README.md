@@ -47,6 +47,12 @@ every source above; copies of those statements are reproduced in [`bibles.md`](b
 egui's default fonts (Ubuntu-Light, Hack, Noto Emoji, emoji-icon-font; OFL/Apache/MIT) remain as
 fallbacks for symbols.
 
+## Ported code: MIT
+
+`crates/core/src/memory.rs` schedules memorised passages with a port of the FSRS-6 scheduler in
+[ts-fsrs](https://github.com/open-spaced-repetition/ts-fsrs) 5.4.1, © Open Spaced Repetition,
+MIT-licensed. Its licence is reproduced in [`ts-fsrs-MIT.txt`](ts-fsrs-MIT.txt).
+
 ## Object specs and model images: CC BY 4.0
 
 The object specs in `objects/` (`ark.json`, `cubits.json`, their schemas and docs) and the images
@@ -55,7 +61,7 @@ carries `ark.jpg` and the specs) are licensed CC BY 4.0, unlike the MIT code tha
 notice is [`objects/LICENSE`](../objects/LICENSE) and the legal code is
 [`CC-BY-4.0.txt`](CC-BY-4.0.txt). Credit them as:
 
-> Ark of the Covenant specs and 3D models © 2026 Micky (github.com/michaelshimeles) / bible-rs contributors, licensed CC BY 4.0, https://github.com/michaelshimeles/bible-rs
+> Ark of the Covenant specs and 3D models © 2026 Micky (github.com/michaelshimeles) / bible-rs contributors, licensed CC BY 4.0, https://github.com/michaelshimeles/bible
 
 ## Test fixtures
 

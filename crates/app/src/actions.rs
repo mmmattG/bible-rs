@@ -44,8 +44,23 @@ pub enum Action {
     /// Removes one highlight of a verse: the one stored from that char.
     RemoveHighlight(VerseRef, u32),
     RemoveNote(VerseRef),
-    /// Save a note's text (an empty text removes it).
-    SaveNote(VerseRef, String),
+    /// Save a note's text (an empty text removes it), written over the text the editor started
+    /// from (if the note changed meanwhile, that change is kept as a conflict copy).
+    SaveNote(VerseRef, String, String),
+    /// Memorise the selected verses (M); passages already memorised are left as they are.
+    Memorise,
+    /// Stop memorising the passages the selection touches, forgetting their recalls.
+    StopMemorising,
+    /// Recall the memorised passages that are due, one after another in the reader.
+    StartRecall,
+    /// Reveal more or less of the passage being recalled.
+    Recall(crate::reader::recall::Step),
+    /// Grade the recall (`None`: Good) and go on to the next passage.
+    RecallGrade(Option<bible_core::memory::Grade>),
+    /// Go on from a passage the translation doesn't have all of, without grading it.
+    SkipRecall,
+    EndRecall,
+    ToggleRecallHints,
     /// Start (or restart) a reading plan today; stop one.
     StartPlan(String),
     StopPlan(String),
@@ -63,6 +78,13 @@ pub enum Action {
     EraseStudy,
     /// Show the data folder in the file browser.
     RevealDataDir,
+    /// Study Library (beta): pick the folder to sync the study with, stop syncing, sync now.
+    ChooseStudyLibrary,
+    StopStudyLibrary,
+    SyncStudyLibrary,
+    /// A note's conflict copy (from the study library): make it the note, or drop it.
+    UseConflict(VerseRef, bible_core::sync::Stamp),
+    DismissConflict(VerseRef, bible_core::sync::Stamp),
     /// Focus mode: full screen with the chrome out of the way.
     ToggleFocus,
     /// Open the text & layout popover (⌘T).

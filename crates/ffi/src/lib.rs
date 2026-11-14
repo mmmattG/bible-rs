@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard};
 use std::time::Instant;
 
 use bible_core::books::{BIBLE_SECTIONS, BOOKS, CHAPTER_COUNT, FIRST_NT_BOOK, Testament};
+use bible_core::folder::{FolderLibrary, SyncStatus};
 use bible_core::library::{Chapter, Library};
 use bible_core::model::{Origin, Translation};
 use bible_core::search::{Query, Scope};
@@ -231,6 +232,8 @@ pub struct VerseMarks {
     pub highlight: Option<HighlightColor>,
     pub note: bool,
     pub bookmark: bool,
+    /// The first verse of a passage being memorised.
+    pub memorised: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -263,6 +266,167 @@ pub enum ExportFormat {
     Markdown,
     /// Re-importable, by the Mac app too.
     Json,
+}
+
+/// A passage being memorised.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MemorisedPassage {
+    pub first: VerseRef,
+    pub last: VerseRef,
+    pub chapter_index: u16,
+    /// "John 3:16" or "John 3:16–18".
+    pub reference: String,
+    /// The translation it is learnt in.
+    pub translation: String,
+    /// Unix seconds when it is next due.
+    pub due: i64,
+}
+
+impl From<&bible_core::memory::Memorised> for MemorisedPassage {
+    fn from(m: &bible_core::memory::Memorised) -> Self {
+        MemorisedPassage {
+            first: m.first.into(),
+            last: m.last.into(),
+            chapter_index: m.first.chapter_idx().0,
+            reference: m.reference(),
+            translation: m.translation.clone(),
+            due: m.schedule.due,
+        }
+    }
+}
+
+/// How well a passage was recalled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum RecallGrade {
+    Again,
+    Hard,
+    Good,
+    Easy,
+}
+
+impl From<RecallGrade> for bible_core::memory::Grade {
+    fn from(g: RecallGrade) -> Self {
+        use bible_core::memory::Grade;
+        match g {
+            RecallGrade::Again => Grade::Again,
+            RecallGrade::Hard => Grade::Hard,
+            RecallGrade::Good => Grade::Good,
+            RecallGrade::Easy => Grade::Easy,
+        }
+    }
+}
+
+/// A verse's text as typeset, with the char offsets where a new line starts inside it.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct RecallVerse {
+    pub text: String,
+    pub breaks: Vec<u32>,
+}
+
+/// Where each char (Unicode scalar) of a verse appears as a recall reveals it: its place on the
+/// reveal's line, or a negative number for a space; and whether it is a word's first letter.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct RecallVersePlan {
+    pub places: Vec<f32>,
+    pub first_letters: Vec<bool>,
+}
+
+/// Chars `start..end` of verse `verse` (an index into the plan's verses).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct RecallPart {
+    pub verse: u32,
+    pub start: u32,
+    pub end: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct RecallPhrase {
+    pub parts: Vec<RecallPart>,
+    /// Where its last char is fully shown.
+    pub shown: f32,
+    /// Where a reveal rests after it.
+    pub stop: f32,
+}
+
+/// How a recall reveals a passage (see `bible_core::memory::Reveal`): a char shows from its place
+/// to `soft` units later; a reveal rests at 0, at each phrase's stop, or between words.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct RecallPlan {
+    pub verses: Vec<RecallVersePlan>,
+    pub phrases: Vec<RecallPhrase>,
+    pub word_rests: Vec<f32>,
+    pub end: f32,
+    pub soft: f32,
+}
+
+/// The reveal of a passage's verses, as the reader typeset them.
+#[uniffi::export]
+pub fn recall_plan(verses: Vec<RecallVerse>) -> RecallPlan {
+    let input: Vec<(&str, Vec<usize>)> =
+        verses.iter().map(|v| (v.text.as_str(), v.breaks.iter().map(|&b| b as usize).collect())).collect();
+    let r = bible_core::memory::Reveal::new(&input, 5.0);
+    RecallPlan {
+        verses: r
+            .places
+            .iter()
+            .zip(&r.first_letters)
+            .map(|(places, firsts)| RecallVersePlan {
+                places: places.iter().map(|p| p.unwrap_or(-1.0)).collect(),
+                first_letters: firsts.clone(),
+            })
+            .collect(),
+        phrases: r
+            .phrases
+            .iter()
+            .map(|p| RecallPhrase {
+                parts: p
+                    .parts
+                    .iter()
+                    .map(|(v, range)| RecallPart {
+                        verse: *v as u32,
+                        start: range.start as u32,
+                        end: range.end as u32,
+                    })
+                    .collect(),
+                shown: p.shown,
+                stop: p.stop,
+            })
+            .collect(),
+        word_rests: r.word_rests().collect(),
+        end: r.end,
+        soft: r.soft,
+    }
+}
+
+/// How a study library folder stands (see `bible_core::folder`).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct StudyLibraryStatus {
+    /// The folder can't be reached.
+    pub offline: bool,
+    /// Records changed here not yet written to the folder.
+    pub outgoing: u32,
+    /// Files from other devices not yet read (iCloud may still be downloading them).
+    pub incoming: u32,
+    /// Note conflict copies waiting for the reader.
+    pub conflicts: u32,
+    /// Other devices writing to the folder.
+    pub devices: u32,
+    /// "Synced", "3 waiting", "Offline", "2 conflicts".
+    pub label: String,
+}
+
+/// What one sync with a study library folder did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct StudyLibrarySync {
+    /// Files read from other devices, and the records they changed here.
+    pub read: u32,
+    pub changed: u32,
+    /// New note conflict copies.
+    pub conflicts: u32,
+    /// Records written for the other devices.
+    pub written: u32,
+    /// Files there not read yet.
+    pub waiting: u32,
 }
 
 /// The translations and the study store (highlights, notes, bookmarks, settings) in one data
@@ -406,8 +570,10 @@ impl Bible {
                     highlight: study.highlight(r).map(Into::into),
                     note: study.note(r).is_some(),
                     bookmark: study.is_bookmarked(r),
+                    memorised: study.memorised_at(r).is_some_and(|m| m.first == r),
                 };
-                (marks.highlight.is_some() || marks.note || marks.bookmark).then_some(marks)
+                (marks.highlight.is_some() || marks.note || marks.bookmark || marks.memorised)
+                    .then_some(marks)
             })
             .collect()
     }
@@ -429,6 +595,12 @@ impl Bible {
     /// Saves a note; an empty one deletes it.
     pub fn set_note(&self, verse: VerseRef, body: String) -> Result<(), BibleError> {
         Ok(self.study().set_note(verse.core()?, &body)?)
+    }
+
+    /// Saves a note written over `base` (the text the editor started from). If the stored
+    /// note changed meanwhile, that text is kept as a conflict copy and this returns true.
+    pub fn set_note_over(&self, verse: VerseRef, body: String, base: String) -> Result<bool, BibleError> {
+        Ok(self.study().set_note_over(verse.core()?, &body, &base)?)
     }
 
     pub fn set_bookmark(&self, verse: VerseRef, on: bool) -> Result<(), BibleError> {
@@ -492,12 +664,107 @@ impl Bible {
         })
     }
 
+    /// Starts memorising verses `first..=last` of one chapter as `translation` has them.
+    pub fn memorise(&self, first: VerseRef, last: VerseRef, translation: String) -> Result<(), BibleError> {
+        Ok(self.study().memorise(first.core()?, last.core()?, &translation)?)
+    }
+
+    /// Stops memorising the passage that starts at `first`.
+    pub fn forget(&self, first: VerseRef) -> Result<(), BibleError> {
+        Ok(self.study().forget(first.core()?)?)
+    }
+
+    /// The passage being memorised that a verse is part of.
+    pub fn memorised_at(&self, verse: VerseRef) -> Option<MemorisedPassage> {
+        let v = verse.core().ok()?;
+        self.study().memorised_at(v).map(Into::into)
+    }
+
+    /// The passages due by `until` (Unix seconds; the end of the reader's day, so a passage is due
+    /// all of the day it falls on), the longest overdue first.
+    pub fn due_passages(&self, until: i64) -> Vec<MemorisedPassage> {
+        self.study().due(until).into_iter().map(Into::into).collect()
+    }
+
+    /// Every passage being memorised, the soonest due first.
+    pub fn memorised_passages(&self) -> Vec<MemorisedPassage> {
+        self.study().memorised().into_iter().map(Into::into).collect()
+    }
+
+    /// When the passage that starts at `first` would come back after a recall now, for each grade
+    /// (Again, Hard, Good, Easy): "1 day", "3 weeks".
+    pub fn grade_labels(&self, first: VerseRef) -> Vec<String> {
+        let (Ok(v), now) = (first.core(), study::now()) else { return Vec::new() };
+        let study = self.study();
+        let Some(m) = study.memorised_at(v) else { return Vec::new() };
+        m.schedule.preview(now).iter().map(|&due| bible_core::memory::interval_label(now, due)).collect()
+    }
+
+    /// Whether `translation` has all of a passage, so recalling it there tests all of it.
+    pub fn has_passage(&self, translation: String, passage: MemorisedPassage) -> bool {
+        let c = ChapterIdx(passage.chapter_index.min(CHAPTER_COUNT as u16 - 1));
+        match self.library().chapter(&translation, c) {
+            Chapter::Ready(t) => t.has_passage(c, passage.first.verse, passage.last.verse),
+            // An online chapter still on its way: the reader finds out when it arrives.
+            Chapter::Pending => true,
+            _ => false,
+        }
+    }
+
+    /// Records a recall of the passage that starts at `first`, scheduling it again.
+    pub fn review(&self, first: VerseRef, grade: RecallGrade) -> Result<(), BibleError> {
+        Ok(self.study().review(first.core()?, grade.into(), study::now())?)
+    }
+
     pub fn setting(&self, key: String) -> Option<String> {
         self.study().setting(&key)
     }
 
     pub fn set_setting(&self, key: String, value: String) -> Result<(), BibleError> {
         Ok(self.study().set_setting(&key, &value)?)
+    }
+
+    /// Syncs the study with a study library folder (one the Mac app syncs with too, through
+    /// iCloud Drive, say). Blocks while it reads the folder (a file iCloud hasn't downloaded
+    /// yet holds the read), so call it off the main thread; the study stays usable meanwhile.
+    pub fn sync_study_library(&self, folder: String) -> Result<StudyLibrarySync, BibleError> {
+        // Opening reads library.json, which may wait on the sync service: not under the lock.
+        let lib = FolderLibrary::open(std::path::Path::new(&folder))?;
+        let plan = lib.plan(&self.study());
+        let fetched = lib.fetch(&plan)?;
+        let r = lib.apply(&mut self.study(), fetched)?;
+        let n = |n: usize| n.min(u32::MAX as usize) as u32;
+        Ok(StudyLibrarySync {
+            read: n(r.read),
+            changed: n(r.merged.changed()),
+            conflicts: n(r.merged.conflicts),
+            written: n(r.written),
+            waiting: n(r.waiting),
+        })
+    }
+
+    /// How a study library folder stands, from its file names (quick).
+    pub fn study_library_status(&self, folder: String) -> StudyLibraryStatus {
+        // The folder is read without the study lock (it may wait on the sync service).
+        let me = self.study().device_id().to_string();
+        let opened = FolderLibrary::open(std::path::Path::new(&folder)).map(|lib| {
+            let listing = lib.listing(&me);
+            (lib, listing)
+        });
+        let study = self.study();
+        let s = match opened {
+            Ok((lib, listing)) => lib.status_of(&study, &listing),
+            Err(_) => SyncStatus { offline: true, conflicts: study.conflict_count(), ..Default::default() },
+        };
+        let n = |n: usize| n.min(u32::MAX as usize) as u32;
+        StudyLibraryStatus {
+            offline: s.offline,
+            outgoing: n(s.outgoing),
+            incoming: n(s.incoming),
+            conflicts: n(s.conflicts),
+            devices: n(s.devices),
+            label: s.label(),
+        }
     }
 }
 

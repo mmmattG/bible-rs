@@ -11,6 +11,10 @@ struct ReaderContainer: UIViewRepresentable {
     let selection: VerseSelection?
     let marksVersion: Int
     let jump: JumpRequest?
+    let recall: RecallRun?
+    let recallLetters: Bool
+    let recallSeek: RecallSeek?
+    let onBooksPan: (UIGestureRecognizer.State, CGFloat, CGFloat) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(store: store) }
 
@@ -22,6 +26,13 @@ struct ReaderContainer: UIViewRepresentable {
 
     func updateUIView(_ view: ReaderView, context: Context) {
         let c = context.coordinator
+        c.onBooksPan = onBooksPan
+        view.booksGestureEnabled = store.sheet == nil && !store.booksOpen
+        if store.booksOpen && view.isScrollEnabled {
+            view.setContentOffset(view.contentOffset, animated: false)
+        }
+        view.isScrollEnabled = !store.booksOpen
+        view.accessibilityElementsHidden = store.booksOpen
         let bible = store.bible
         let translation = translation
         let options = style.options
@@ -39,6 +50,11 @@ struct ReaderContainer: UIViewRepresentable {
             c.jump = jump.id
             view.jump(to: jump.chapter, verse: jump.verse, animated: jump.animated, flash: jump.flash)
         }
+        view.setRecall(recall?.passage, id: recall?.id, letters: recallLetters, whole: recall?.whole ?? true)
+        if let recallSeek, recallSeek.run == recall?.id, recallSeek.id != c.recallSeek {
+            c.recallSeek = recallSeek.id
+            view.seekRecall(to: recallSeek.progress)
+        }
     }
 
     @MainActor
@@ -46,6 +62,8 @@ struct ReaderContainer: UIViewRepresentable {
         let store: Store
         var marksVersion = 0
         var jump: UUID?
+        var recallSeek: UUID?
+        var onBooksPan: ((UIGestureRecognizer.State, CGFloat, CGFloat) -> Void)?
 
         init(store: Store) { self.store = store }
 
@@ -67,8 +85,20 @@ struct ReaderContainer: UIViewRepresentable {
         }
 
         func reader(_ reader: ReaderView, isReadingOn: Bool) {
-            guard store.selection == nil, store.barsHidden != isReadingOn else { return }
+            guard store.selection == nil, store.recall == nil, store.barsHidden != isReadingOn else { return }
             store.barsHidden = isReadingOn
+        }
+
+        func reader(_ reader: ReaderView, booksPan state: UIGestureRecognizer.State, translation: CGFloat, velocity: CGFloat) {
+            onBooksPan?(state, translation, velocity)
+        }
+
+        func reader(_ reader: ReaderView, recallChanged status: RecallStatus) {
+            let run = store.recall?.id
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.store.recall?.id == run else { return }
+                self.store.recallChanged(status)
+            }
         }
     }
 }

@@ -485,8 +485,8 @@ impl Sapphire {
             s.avalanche = 5;
             s.last_plain = 7;
             s.last_cipher = 11;
-            for i in 0..256 {
-                s.cards[i] = (255 - i) as u8;
+            for (i, card) in s.cards.iter_mut().enumerate() {
+                *card = (255 - i) as u8;
             }
             return s;
         }

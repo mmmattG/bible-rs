@@ -16,6 +16,11 @@ struct ReaderSettings: Codable, Equatable {
     var headings = true
     var wholeWords = false
     var bookLayout = BookLayout.allBooks
+    /// A recall hints at hidden words with their first letters, rather than showing nothing.
+    var recallLetters = true
+    /// Study Library (beta): sync notes, highlights, bookmarks and plans through this app's
+    /// iCloud Drive folder. Off until the reader turns it on.
+    var studyLibrary = false
 
     static let textSizes: ClosedRange<Double> = 14...32
     static let lineSpacings: ClosedRange<Double> = 1.3...2.0
@@ -39,6 +44,8 @@ struct ReaderSettings: Codable, Equatable {
         headings = value(.headings, d.headings)
         wholeWords = value(.wholeWords, d.wholeWords)
         bookLayout = value(.bookLayout, d.bookLayout)
+        recallLetters = value(.recallLetters, d.recallLetters)
+        studyLibrary = value(.studyLibrary, d.studyLibrary)
     }
 }
 
@@ -61,13 +68,31 @@ struct JumpRequest: Equatable {
     var flash = false
 }
 
+struct RecallSeek {
+    let id: UUID
+    let run: UUID
+    let progress: Double
+}
+
+/// The memorised passages being recalled, one after another in the reader.
+struct RecallRun: Equatable {
+    /// New for each passage shown, so the reader hides it afresh even when it comes round again.
+    let id = UUID()
+    var queue: [MemorisedPassage]
+    var index = 0
+    /// The translation being read has all of the passage, so it can be recalled and graded.
+    var whole = true
+    var status = RecallStatus()
+
+    var passage: MemorisedPassage { queue[index] }
+}
+
 enum Sheet: Identifiable, Equatable {
-    case books, search, settings, study
+    case search, settings, study
     case note(VerseRef)
 
     var id: String {
         switch self {
-        case .books: "books"
         case .search: "search"
         case .settings: "settings"
         case .study: "study"
@@ -88,6 +113,7 @@ final class Store {
         didSet {
             guard settings != oldValue else { return }
             if settings.translation != oldValue.translation { translationChanged() }
+            if settings.studyLibrary != oldValue.studyLibrary { studyLibraryToggled() }
             scheduleSave()
         }
     }
@@ -99,11 +125,31 @@ final class Store {
     /// Bumped whenever highlights, notes or bookmarks change.
     private(set) var marksVersion = 0
     var sheet: Sheet?
+    var booksOpen = false
+    var recallSeek: RecallSeek?
     var barsHidden = false
     private(set) var toast: String?
+    private(set) var recall: RecallRun?
 
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     @ObservationIgnored private var toastTask: Task<Void, Never>?
+
+    /// Study Library (beta) status shown in Settings.
+    private(set) var studyLibraryLabel = "Off"
+    private(set) var studyLibraryDetail: String?
+    private(set) var studyLibrarySyncing = false
+    @ObservationIgnored private var studyLibraryTask: Task<Void, Never>?
+    @ObservationIgnored private var studyLibraryDebounce: Task<Void, Never>?
+    @ObservationIgnored private var studyLibraryPoll: Task<Void, Never>?
+    @ObservationIgnored private var studyLibraryRetry: Task<Void, Never>?
+    @ObservationIgnored private var iCloudQuery: NSMetadataQuery?
+    @ObservationIgnored private var iCloudQueryObservers: [NSObjectProtocol] = []
+    @ObservationIgnored private var identityObserver: NSObjectProtocol?
+    @ObservationIgnored private var queryDidGather = false
+    @ObservationIgnored private var lastSyncedAt: Date?
+    @ObservationIgnored private var studyLibraryQueued = false
+    /// Incremented when sync is turned off so an older background pass cannot clear a newer one.
+    @ObservationIgnored private var studyLibraryGeneration: UInt64 = 0
 
     init() {
         let bible = Self.openBible()
@@ -127,7 +173,30 @@ final class Store {
         self.settings = settings
         self.position = position
         jump = JumpRequest(chapter: position.chapter, verse: position.verse)
+        if ProcessInfo.processInfo.arguments.contains("--open-settings") {
+            sheet = .settings
+        }
+        if settings.studyLibrary {
+            startStudyLibrary()
+        }
+        #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--recall-demo") { recallDemo() }
+        #endif
     }
+
+    #if DEBUG
+        /// Screenshots and checks without touch: memorises John 3:16–17 and recalls it.
+        private func recallDemo() {
+            let first = VerseRef(book: 42, chapter: 3, verse: 16)
+            let last = VerseRef(book: 42, chapter: 3, verse: 17)
+            if bible.memorisedAt(verse: first) == nil {
+                try? bible.memorise(first: first, last: last, translation: settings.translation)
+            }
+            guard let m = bible.memorisedAt(verse: first) else { return }
+            recall = run([m])
+            showRecalled()
+        }
+    #endif
 
     /// The study database and imported texts live in Application Support. If that can't be
     /// opened the reader still works, keeping study data in a temporary folder.
@@ -170,6 +239,8 @@ final class Store {
 
     private func translationChanged() {
         selection = nil
+        // Another translation's words: the recall starts the passage over.
+        if let run = recall { recall = self.run(run.queue, index: run.index) }
         warm()
     }
 
@@ -193,6 +264,8 @@ final class Store {
     // MARK: Moving
 
     func go(to chapter: Int, verse: Int = 1, flash: Bool = false, animated: Bool = false) {
+        // Going to another chapter ends a recall.
+        if let run = recall, Int(run.passage.chapterIndex) != chapter { recall = nil }
         selection = nil
         barsHidden = false
         position = Position(chapter: chapter, verse: verse)
@@ -214,6 +287,7 @@ final class Store {
     // MARK: Selection
 
     func tap(verse: Int, chapter: Int) {
+        guard recall == nil else { return }
         barsHidden = false
         if var s = selection, s.chapter == chapter {
             if s.verses.contains(verse) { s.verses.remove(verse) } else { s.verses.insert(verse) }
@@ -281,13 +355,141 @@ final class Store {
         selection = nil
     }
 
+    // MARK: Memorising
+
+    /// The memorised passages the selection touches.
+    private var selectionPassages: [MemorisedPassage] {
+        var out: [MemorisedPassage] = []
+        for ref in selectedRefs {
+            if let m = bible.memorisedAt(verse: ref), !out.contains(where: { $0.first == m.first }) { out.append(m) }
+        }
+        return out
+    }
+
+    var selectionMemorised: Bool { !selectionPassages.isEmpty }
+
+    /// Memorises the selected verses, or stops memorising them.
+    func memoriseSelection() {
+        let refs = selectedRefs
+        guard let first = refs.first, let last = refs.last else { return }
+        // A selection touching passages already memorised stops them, never resets them.
+        let memorised = selectionPassages
+        if !memorised.isEmpty {
+            if study({ for m in memorised { try bible.forget(first: m.first) } }) {
+                show("Stopped memorising \(memorised.map(\.reference).joined(separator: ", "))")
+            }
+            selection = nil
+            return
+        }
+        guard Int(last.verse) - Int(first.verse) == refs.count - 1 else {
+            show("Select verses next to each other")
+            return
+        }
+        let label = rangeLabel(from: first, to: last)
+        if study({ try bible.memorise(first: first, last: last, translation: settings.translation) }) {
+            show("Memorising \(label)")
+        }
+        selection = nil
+    }
+
+    /// Due by the end of today: a passage is due all of the day it falls on.
+    var duePassages: [MemorisedPassage] {
+        let calendar = Calendar.current
+        let end = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: .now)) ?? .now
+        return bible.duePassages(until: Int64(end.timeIntervalSince1970))
+    }
+    var memorisedPassages: [MemorisedPassage] { bible.memorisedPassages() }
+
+    /// Recalls the passages due now in the reader, or with nothing due, practises them all early.
+    func startRecall() {
+        let due = duePassages
+        let queue = due.isEmpty ? memorisedPassages : due
+        guard !queue.isEmpty else {
+            show("Select verses, then Memorise")
+            return
+        }
+        if due.isEmpty { show("Nothing is due, so this is extra practice") }
+        recall = run(queue)
+        showRecalled()
+    }
+
+    /// Recalls `queue[index]`, in the translation being read.
+    private func run(_ queue: [MemorisedPassage], index: Int = 0) -> RecallRun {
+        var run = RecallRun(queue: queue, index: index)
+        // Only all of it: a grade from part of the passage would schedule the whole.
+        run.whole = bible.hasPassage(translation: settings.translation, passage: run.passage)
+        return run
+    }
+
+    private func showRecalled() {
+        // Recalled in the translation being read.
+        guard let passage = recall?.passage else { return }
+        sheet = nil
+        go(to: Int(passage.chapterIndex), verse: Int(passage.first.verse))
+    }
+
+    func seekRecall(to progress: Double) {
+        guard let recall else { return }
+        recallSeek = RecallSeek(id: UUID(), run: recall.id, progress: progress.clamped(to: 0...1))
+    }
+
+    func recallChanged(_ status: RecallStatus) {
+        recall?.status = status
+    }
+
+    /// When the passage being recalled would come back for each grade: "1 day", "3 weeks".
+    var gradeLabels: [String] {
+        guard let run = recall else { return [] }
+        return bible.gradeLabels(first: run.passage.first)
+    }
+
+    /// Grades the passage and goes on to the next, or ends.
+    func grade(_ grade: RecallGrade) {
+        guard let run = recall, run.status.done else { return }
+        // A failed save stays on the passage, to grade again.
+        guard study({ try bible.review(first: run.passage.first, grade: grade) }) else { return }
+        // Again stays due: it comes back at the end of this session.
+        let queue = grade == .again ? run.queue + [run.passage] : run.queue
+        next(queue, index: run.index + 1)
+    }
+
+    /// Goes on from a passage the translation doesn't have all of, without grading it. It stays due.
+    func skipRecall() {
+        guard let run = recall, run.status.unavailable else { return }
+        var queue = run.queue
+        queue.remove(at: run.index)
+        next(queue, index: run.index)
+    }
+
+    private func next(_ queue: [MemorisedPassage], index: Int) {
+        if index < queue.count {
+            recall = run(queue, index: index)
+            showRecalled()
+        } else {
+            recall = nil
+            let n = Set(queue.map(\.first)).count
+            if n > 0 { show(n == 1 ? "Recalled 1 passage" : "Recalled \(n) passages") }
+        }
+    }
+
+    func endRecall() {
+        recall = nil
+    }
+
     // MARK: Study
 
     func note(_ ref: VerseRef) -> String { (try? bible.note(verse: ref)) ?? "" }
 
     @discardableResult
-    func setNote(_ ref: VerseRef, _ body: String) -> Bool {
-        study { try bible.setNote(verse: ref, body: body) }
+    func setNote(_ ref: VerseRef, _ body: String, over base: String) -> Bool {
+        var conflict = false
+        let ok = study { conflict = try bible.setNoteOver(verse: ref, body: body, base: base) }
+        if ok, conflict {
+            show(
+                "A note was edited on two devices. Both versions are kept; you can choose on a Mac in Settings › Data."
+            )
+        }
+        return ok
     }
 
     func setHighlight(_ ref: VerseRef, _ color: HighlightColor?) {
@@ -316,6 +518,7 @@ final class Store {
         defer { marksVersion += 1 }
         do {
             try change()
+            scheduleStudyLibrarySync()
             return true
         } catch {
             show("Couldn’t save: \(error.localizedDescription)")
@@ -357,6 +560,244 @@ final class Store {
         let saved = Saved(settings: settings, chapter: position.chapter, verse: position.verse)
         guard let data = try? JSONEncoder().encode(saved), let json = String(data: data, encoding: .utf8) else { return }
         try? bible.setSetting(key: "ios", value: json)
+    }
+
+    // MARK: Study Library (iCloud)
+
+    func studyLibraryForeground() {
+        guard settings.studyLibrary else { return }
+        startStudyLibrary()
+        syncStudyLibraryNow()
+    }
+
+    func syncStudyLibraryNow() {
+        guard settings.studyLibrary else { return }
+        studyLibraryDebounce?.cancel()
+        studyLibraryRetry?.cancel()
+        runStudyLibrarySync()
+    }
+
+    private func studyLibraryToggled() {
+        if settings.studyLibrary {
+            startStudyLibrary()
+            syncStudyLibraryNow()
+        } else {
+            stopStudyLibrary()
+            studyLibraryLabel = "Off"
+            studyLibraryDetail = nil
+            studyLibrarySyncing = false
+        }
+    }
+
+    private func scheduleStudyLibrarySync() {
+        guard settings.studyLibrary else { return }
+        studyLibraryDebounce?.cancel()
+        studyLibraryDebounce = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            self?.syncStudyLibraryNow()
+        }
+    }
+
+    private func startStudyLibrary() {
+        guard !ProcessInfo.processInfo.arguments.contains("--uitest") else { return }
+        startIdentityObserver()
+        startICloudQuery()
+        startStudyLibraryPoll()
+    }
+
+    private func stopStudyLibrary() {
+        studyLibraryGeneration += 1
+        studyLibraryDebounce?.cancel()
+        studyLibraryDebounce = nil
+        studyLibraryRetry?.cancel()
+        studyLibraryRetry = nil
+        studyLibraryPoll?.cancel()
+        studyLibraryPoll = nil
+        // Leave `studyLibraryTask` until that pass finishes and reports in; cancel() does not
+        // stop the folder work already running, and clearing the handle here would let a new
+        // pass start while the old one can still clear it.
+        studyLibraryQueued = false
+        queryDidGather = false
+        stopICloudQuery()
+        stopIdentityObserver()
+    }
+
+    private func startStudyLibraryPoll() {
+        guard studyLibraryPoll == nil else { return }
+        studyLibraryPoll = Task { @MainActor [weak self] in
+            while let self, !Task.isCancelled, self.settings.studyLibrary {
+                try? await Task.sleep(for: .seconds(30))
+                guard !Task.isCancelled, self.settings.studyLibrary else { return }
+                self.syncStudyLibraryNow()
+            }
+        }
+    }
+
+    private func startIdentityObserver() {
+        guard identityObserver == nil else { return }
+        identityObserver = NotificationCenter.default.addObserver(
+            forName: .NSUbiquityIdentityDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.queryDidGather = false
+                self?.syncStudyLibraryNow()
+            }
+        }
+    }
+
+    private func stopIdentityObserver() {
+        if let identityObserver {
+            NotificationCenter.default.removeObserver(identityObserver)
+            self.identityObserver = nil
+        }
+    }
+
+    private func startICloudQuery() {
+        guard iCloudQuery == nil else { return }
+        let query = NSMetadataQuery()
+        query.predicate = NSPredicate(value: true)
+        query.searchScopes = [NSMetadataQueryUbiquitousDocumentsScope]
+        let center = NotificationCenter.default
+        let gathered = center.addObserver(
+            forName: .NSMetadataQueryDidFinishGathering, object: query, queue: .main
+        ) { [weak self] note in
+            Task { @MainActor [weak self] in
+                self?.handleICloudQuery(note.object as? NSMetadataQuery, gathered: true)
+            }
+        }
+        let updated = center.addObserver(
+            forName: .NSMetadataQueryDidUpdate, object: query, queue: .main
+        ) { [weak self] note in
+            Task { @MainActor [weak self] in
+                self?.handleICloudQuery(note.object as? NSMetadataQuery, gathered: false)
+            }
+        }
+        iCloudQueryObservers = [gathered, updated]
+        iCloudQuery = query
+        query.start()
+    }
+
+    private func stopICloudQuery() {
+        iCloudQuery?.stop()
+        iCloudQuery = nil
+        for observer in iCloudQueryObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        iCloudQueryObservers = []
+    }
+
+    private func handleICloudQuery(_ query: NSMetadataQuery?, gathered: Bool) {
+        guard let query else { return }
+        query.disableUpdates()
+        defer { query.enableUpdates() }
+        if gathered { queryDidGather = true }
+        var pending = 0
+        for item in query.results {
+            guard let item = item as? NSMetadataItem else { continue }
+            let path = item.value(forAttribute: NSMetadataItemPathKey) as? String ?? ""
+            guard path.contains(StudyLibrary.folderName) else { continue }
+            let status = item.value(forAttribute: NSMetadataUbiquitousItemDownloadingStatusKey) as? String
+            if status == NSMetadataUbiquitousItemDownloadingStatusNotDownloaded {
+                if let url = item.value(forAttribute: NSMetadataItemURLKey) as? URL {
+                    StudyLibrary.startDownloading(url)
+                }
+                pending += 1
+            }
+        }
+        if pending > 0 || gathered {
+            scheduleStudyLibrarySync()
+        }
+    }
+
+    private func runStudyLibrarySync() {
+        if studyLibraryTask != nil {
+            studyLibraryQueued = true
+            return
+        }
+        studyLibrarySyncing = true
+        if studyLibraryLabel == "Off" || studyLibraryLabel.isEmpty {
+            studyLibraryLabel = "Syncing…"
+        }
+        let bible = bible
+        let queryDidGather = queryDidGather
+        let generation = studyLibraryGeneration
+        studyLibraryTask = Task.detached(priority: .utility) { [weak self] in
+            let outcome = StudyLibrary.run(bible: bible, queryDidGather: queryDidGather)
+            await self?.applyStudyLibrary(outcome, generation: generation)
+        }
+    }
+
+    private func applyStudyLibrary(_ outcome: StudyLibrary.Outcome, generation: UInt64) {
+        studyLibraryTask = nil
+        if generation != studyLibraryGeneration {
+            // The older pass may already have merged remote items into the local
+            // store before we rejected its status. Refresh study views for those.
+            if case .synced(let changed, _, _, _, _) = outcome, changed > 0 {
+                marksVersion += 1
+            }
+            if settings.studyLibrary, studyLibraryQueued {
+                studyLibraryQueued = false
+                runStudyLibrarySync()
+            }
+            return
+        }
+        studyLibrarySyncing = false
+        switch outcome {
+        case .signedOut:
+            studyLibraryLabel = "iCloud is signed out"
+            studyLibraryDetail = "Sign in to iCloud in the Settings app to sync this library."
+        case .unavailable:
+            studyLibraryLabel = "iCloud isn’t available"
+            studyLibraryDetail = "This iPhone couldn’t reach the Study Library folder."
+        case .waiting(let count):
+            studyLibraryLabel = "Waiting for iCloud…"
+            studyLibraryDetail =
+                count == 1 ? "1 file is still downloading." : "\(count) files are still downloading."
+            retryStudyLibrary(after: 3)
+        case .waitingToAppear:
+            studyLibraryLabel = "Waiting for iCloud…"
+            studyLibraryDetail = "Checking for a library already in iCloud Drive."
+            retryStudyLibrary(after: 3)
+        case .synced(let changed, let conflicts, let label, let offline, let devices):
+            let now = Date()
+            lastSyncedAt = now
+            studyLibraryLabel = label
+            if offline {
+                studyLibraryDetail = "The folder can’t be reached right now."
+            } else {
+                let others: String
+                switch devices {
+                case 0: others = "no other devices yet"
+                case 1: others = "1 other device"
+                default: others = "\(devices) other devices"
+                }
+                studyLibraryDetail = "Last synced \(now.formatted(date: .omitted, time: .shortened)) · \(others)"
+            }
+            if changed > 0 { marksVersion += 1 }
+            if conflicts > 0 {
+                show(
+                    "A note was edited on two devices. Both versions are kept; you can choose on a Mac in Settings › Data."
+                )
+            }
+        case .failed(let message):
+            studyLibraryLabel = "Couldn’t sync"
+            studyLibraryDetail = message
+            retryStudyLibrary(after: 8)
+        }
+        if studyLibraryQueued {
+            studyLibraryQueued = false
+            runStudyLibrarySync()
+        }
+    }
+
+    private func retryStudyLibrary(after seconds: Double) {
+        studyLibraryRetry?.cancel()
+        studyLibraryRetry = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(seconds))
+            guard !Task.isCancelled else { return }
+            self?.syncStudyLibraryNow()
+        }
     }
 }
 

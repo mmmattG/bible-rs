@@ -19,7 +19,9 @@ final class BibleUITests: XCTestCase {
 
     private var reference: XCUIElement { app.buttons["reference"] }
 
-    private func verse(_ id: String) -> XCUIElement { app.staticTexts[id] }
+    private func verse(_ id: String) -> XCUIElement {
+        app.scrollViews["reader"].staticTexts.matching(identifier: id).firstMatch
+    }
 
     /// Waits for the toolbar to name a chapter.
     private func expectChapter(_ title: String, file: StaticString = #filePath, line: UInt = #line) {
@@ -159,12 +161,192 @@ final class BibleUITests: XCTestCase {
         }
     }
 
+    func testBookDrawerOpensFromTheMiddleAndClosesWithoutMoving() {
+        let first = verse("John 1:1")
+        let y = first.frame.minY
+        swipeReaderRight()
+        XCTAssertTrue(app.buttons["close-books"].waitForExistence(timeout: 3))
+        app.buttons["close-books"].tap()
+        expectChapter("John 1")
+        XCTAssertEqual(first.frame.minY, y, accuracy: 2)
+
+        reference.tap()
+        XCTAssertTrue(app.buttons["close-books"].waitForExistence(timeout: 3))
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.45))
+        start.press(forDuration: 0, thenDragTo: start.withOffset(CGVector(dx: -260, dy: 0)))
+        XCTAssertTrue(reference.waitForExistence(timeout: 3))
+        XCTAssertTrue(reference.isHittable)
+        XCTAssertEqual(first.frame.minY, y, accuracy: 2)
+    }
+
+    func testBookDrawerCancellationKeepsVerseSelection() {
+        verse("John 1:1").tap()
+        XCTAssertTrue(app.selectionAction("Clear selection").exists)
+        swipeReaderRight()
+        XCTAssertTrue(app.buttons["close-books"].waitForExistence(timeout: 3))
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.96, dy: 0.5)).tap()
+        XCTAssertTrue(app.selectionAction("Clear selection").waitForExistence(timeout: 3))
+    }
+
+    func testBookDrawerDoesNotOpenForVerticalOrShortDrags() {
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.55))
+        start.press(forDuration: 0, thenDragTo: start.withOffset(CGVector(dx: 15, dy: -200)))
+        XCTAssertFalse(app.buttons["close-books"].exists)
+        start.press(
+            forDuration: 0, thenDragTo: start.withOffset(CGVector(dx: 35, dy: 0)),
+            withVelocity: .slow, thenHoldForDuration: 0.2)
+        XCTAssertFalse(app.buttons["close-books"].exists)
+    }
+
+    func testRecallTapAndSliderKeepTheirPlaceWhenOpeningBooks() {
+        startRecall()
+        XCTAssertTrue(app.buttons["end-recall"].waitForExistence(timeout: 3))
+        XCTAssertTrue(recallSlider.exists)
+        verse("John 1:1").tap()
+        XCTAssertTrue(app.staticTexts["Tap for the next word, or slide to check"].waitForExistence(timeout: 3))
+        swipeReaderRight()
+        XCTAssertTrue(app.buttons["close-books"].waitForExistence(timeout: 3))
+        app.buttons["close-books"].tap()
+        XCTAssertTrue(app.staticTexts["Tap for the next word, or slide to check"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["end-recall"].exists)
+        XCTAssertFalse(app.buttons["grade-Good"].exists)
+    }
+
+    func testRecallSliderCanRewindAfterCompletionAndDrawerKeepsProgress() {
+        startRecall()
+        let slider = recallSlider
+        XCTAssertTrue(slider.waitForExistence(timeout: 3))
+        XCTAssertEqual(slider.value as? String, "0 percent")
+        verse("John 1:1").tap()
+        let advanced = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value != '0 percent'"), object: slider)
+        XCTAssertEqual(XCTWaiter.wait(for: [advanced], timeout: 3), .completed)
+        dragRecallSlider(to: 1)
+        XCTAssertTrue(app.buttons["grade-Good"].waitForExistence(timeout: 3))
+        XCTAssertEqual(slider.value as? String, "100 percent")
+        XCTAssertFalse(app.buttons["close-books"].exists, "slider drag opened Books")
+        dragRecallSlider(to: 0.4)
+        XCTAssertFalse(app.buttons["grade-Good"].exists)
+        let value = slider.value as? String ?? ""
+        let percent = Double(value.replacingOccurrences(of: " percent", with: "")) ?? -1
+        XCTAssertEqual(percent, 40, accuracy: 3)
+        let progress = slider.value as? String
+        swipeReaderRight()
+        XCTAssertTrue(app.buttons["close-books"].waitForExistence(timeout: 3))
+        app.buttons["close-books"].tap()
+        XCTAssertTrue(slider.waitForExistence(timeout: 3))
+        XCTAssertEqual(slider.value as? String, progress)
+    }
+
+    func testRecallTapStillAdvancesAfterScrubbingToAnEndpoint() {
+        startRecall()
+        let slider = recallSlider
+        XCTAssertTrue(slider.waitForExistence(timeout: 3))
+        dragRecallSlider(to: 0)
+        verse("John 1:1").tap()
+        let advanced = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value != '0 percent'"), object: slider)
+        XCTAssertEqual(XCTWaiter.wait(for: [advanced], timeout: 3), .completed)
+        dragRecallSlider(to: 1)
+        XCTAssertTrue(app.buttons["grade-Good"].waitForExistence(timeout: 3))
+        dragRecallSlider(to: 0)
+        XCTAssertEqual(slider.value as? String, "0 percent")
+        verse("John 1:1").tap()
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value != '0 percent'"), object: slider)], timeout: 3), .completed)
+    }
+
+    func testRecallSliderFollowsDiagonalDragsToBothEdges() {
+        startRecall()
+        let slider = recallSlider
+        let left = slider.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.5))
+        let rightAbove = slider.coordinate(withNormalizedOffset: CGVector(dx: 1.03, dy: -2))
+        left.press(forDuration: 0.1, thenDragTo: rightAbove, withVelocity: .slow, thenHoldForDuration: 0.2)
+        XCTAssertEqual(slider.value as? String, "100 percent")
+        XCTAssertTrue(app.buttons["grade-Good"].waitForExistence(timeout: 3))
+
+        let right = slider.coordinate(withNormalizedOffset: CGVector(dx: 0.97, dy: 0.5))
+        let leftAbove = slider.coordinate(withNormalizedOffset: CGVector(dx: -0.03, dy: -2))
+        right.press(forDuration: 0.1, thenDragTo: leftAbove, withVelocity: .slow, thenHoldForDuration: 0.2)
+        XCTAssertEqual(slider.value as? String, "0 percent")
+        XCTAssertFalse(app.buttons["grade-Good"].exists)
+        XCTAssertFalse(app.buttons["close-books"].exists)
+    }
+
+    func testRecallSliderUsesTheFingerPositionAcrossTheTrack() {
+        startRecall()
+        let slider = recallSlider
+        let left = slider.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.5))
+        let middleAbove = slider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: -3))
+        left.press(forDuration: 0.1, thenDragTo: middleAbove, withVelocity: .slow, thenHoldForDuration: 0.2)
+        let value = slider.value as? String ?? ""
+        let percent = Double(value.replacingOccurrences(of: " percent", with: "")) ?? -1
+        XCTAssertEqual(percent, 50, accuracy: 3)
+        XCTAssertFalse(app.buttons["close-books"].exists)
+    }
+
+    func testRecallSliderFollowsAFastDragToTheEdge() {
+        startRecall()
+        let slider = recallSlider
+        let left = slider.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.5))
+        let right = slider.coordinate(withNormalizedOffset: CGVector(dx: 1.03, dy: 0.5))
+        left.press(forDuration: 0, thenDragTo: right, withVelocity: .fast, thenHoldForDuration: 0)
+        XCTAssertEqual(slider.value as? String, "100 percent")
+        XCTAssertTrue(app.buttons["grade-Good"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["close-books"].exists)
+    }
+
+    private var recallSlider: XCUIElement {
+        app.descendants(matching: .any).matching(identifier: "recall-progress").firstMatch
+    }
+
+    private func dragRecallSlider(to progress: CGFloat) {
+        let slider = recallSlider
+        let value = slider.value as? String ?? ""
+        let current = (Double(value.replacingOccurrences(of: " percent", with: "")) ?? 0) / 100
+        let width = slider.frame.width
+        let startX = (14 + (width - 28) * CGFloat(current)) / width
+        let endX = (14 + (width - 28) * progress) / width
+        let start = slider.coordinate(withNormalizedOffset: CGVector(dx: startX, dy: 0.5))
+        let end = slider.coordinate(withNormalizedOffset: CGVector(dx: endX, dy: 0.5))
+        start.press(forDuration: 0.1, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
+    }
+
+    private func startRecall() {
+        let first = verse("John 1:1")
+        XCTAssertTrue(first.waitForExistence(timeout: 3))
+        first.tap()
+        let clear = app.buttons["Clear selection"]
+        if !clear.waitForExistence(timeout: 2) { first.tap() }
+        XCTAssertTrue(clear.waitForExistence(timeout: 3))
+        let memorise = app.buttons["Memorise"]
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: memorise)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 3), .completed)
+        memorise.tap()
+        let saved = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: clear)
+        XCTAssertEqual(XCTWaiter.wait(for: [saved], timeout: 3), .completed)
+        app.buttons["study"].tap()
+        let recall = app.buttons["recall"]
+        XCTAssertTrue(recall.waitForExistence(timeout: 3))
+        recall.tap()
+        XCTAssertTrue(recallSlider.waitForExistence(timeout: 3))
+    }
+
+    private func swipeReaderRight() {
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.35, dy: 0.45))
+        start.press(forDuration: 0, thenDragTo: start.withOffset(CGVector(dx: 230, dy: 0)))
+    }
+
     func testPicksABookAndChapter() {
         reference.tap()
         let layout = app.buttons["book-layout"]
         XCTAssertTrue(layout.waitForExistence(timeout: 3))
         XCTAssertEqual(layout.value as? String, "All books", "the default")
         let romans = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Romans'")).firstMatch
+        for _ in 0..<6 where !romans.exists {
+            let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.45, dy: 0.7))
+            start.press(forDuration: 0, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -100)), withVelocity: .slow, thenHoldForDuration: 0)
+        }
         XCTAssertTrue(romans.waitForExistence(timeout: 3))
         romans.tap()
         let twelve = app.buttons["Romans 12"]
@@ -174,7 +356,7 @@ final class BibleUITests: XCTestCase {
         XCTAssertTrue(verse("Romans 12:1").label.contains("living sacrifice"))
     }
 
-    /// Opens the Books sheet and switches it to sections.
+    /// Opens Books and switches it to sections.
     private func showSections() {
         reference.tap()
         let layout = app.buttons["book-layout"]
@@ -336,6 +518,50 @@ final class BibleUITests: XCTestCase {
         app.buttons["Done"].tap()
         expectChapter("John 1")
         XCTAssertTrue(verse("John 1:1").exists)
+    }
+
+    func testStudyLibraryToggleDefaultsOff() {
+        app.buttons["settings"].tap()
+        let toggle = app.switches["study-library-icloud"]
+        for _ in 0..<12 where !toggle.exists || !toggle.isHittable {
+            app.swipeUp()
+        }
+        XCTAssertTrue(toggle.waitForExistence(timeout: 3), "Study Library toggle should be in Settings")
+        XCTAssertEqual(toggle.value as? String, "0", "Study Library should be off by default")
+        saveStudyLibraryScreenshot("settings-study-library-off")
+
+        // The Form row is wider than the switch; a center tap can miss the control.
+        if toggle.isHittable {
+            toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+        } else {
+            toggle.tap()
+        }
+        let turnedOn = NSPredicate(format: "value == %@", "1")
+        let wait = XCTNSPredicateExpectation(predicate: turnedOn, object: toggle)
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [wait], timeout: 3), .completed, "toggle stayed \(toggle.value ?? "nil")")
+        let status = app.descendants(matching: .any)["study-library-status"]
+        XCTAssertTrue(status.waitForExistence(timeout: 5))
+        // Simulator (and a signed-out phone) cannot reach the ubiquity container.
+        let shown = status.label
+        XCTAssertFalse(shown.isEmpty)
+        XCTAssertTrue(
+            shown.contains("iCloud") || shown.contains("Waiting") || shown.contains("Synced")
+                || shown.contains("Offline") || shown.contains("Couldn’t"),
+            "unexpected status: \(shown)"
+        )
+        XCTAssertTrue(app.buttons["study-library-sync-now"].waitForExistence(timeout: 3))
+        saveStudyLibraryScreenshot("settings-study-library-on")
+    }
+
+    private func saveStudyLibraryScreenshot(_ name: String) {
+        let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        shot.name = name
+        shot.lifetime = .keepAlways
+        add(shot)
+        let dir = URL(fileURLWithPath: "/tmp/bible-ios-study-library")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? XCUIScreen.main.screenshot().pngRepresentation.write(to: dir.appendingPathComponent("\(name).png"))
     }
 
     func testScrollingDoesNotHitch() {

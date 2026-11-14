@@ -4,17 +4,35 @@ struct RootView: View {
     @Environment(Store.self) private var store
     @Environment(\.colorScheme) private var scheme
     @Environment(\.dynamicTypeSize) private var dynamicType
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    @State private var booksDrag: CGFloat = 0
 
     var body: some View {
         @Bindable var store = store
         let theme = Theme.named(store.settings.appearance.resolved(scheme))
         GeometryReader { geo in
             let safeTop = geo.safeAreaInsets.top
+            let drawerWidth = min(geo.size.width * 0.88, 380)
+            let booksVisible = store.booksOpen || booksDrag > 0
             ZStack(alignment: .top) {
                 ReaderContainer(
                     store: store, theme: theme, style: typography(theme), translation: store.settings.translation,
                     readingLine: safeTop + 60, selection: store.selection, marksVersion: store.marksVersion,
-                    jump: store.jump
+                    jump: store.jump, recall: store.recall, recallLetters: store.settings.recallLetters,
+                    recallSeek: store.recallSeek,
+                    onBooksPan: { state, translation, velocity in
+                        switch state {
+                        case .began, .changed:
+                            booksDrag = min(max(translation, 0), drawerWidth)
+                        case .ended, .cancelled:
+                            withAnimation(reduceMotion ? .linear(duration: 0.01) : .smooth(duration: 0.28)) {
+                                store.booksOpen = state == .ended && translation + velocity * 0.15 > drawerWidth * 0.4
+                                booksDrag = 0
+                            }
+                        default: break
+                        }
+                    }
                 )
                 .overlay(alignment: .top) {
                     // Paper under the status bar, fading out below it.
@@ -29,12 +47,14 @@ struct RootView: View {
                     .allowsHitTesting(false)
                 }
                 .ignoresSafeArea()
+                .accessibilityIdentifier("reader")
 
                 TopBar(theme: theme)
                     .padding(.top, 4)
                     .offset(y: store.barsHidden ? -(safeTop + 72) : 0)
                     .opacity(store.barsHidden ? 0 : 1)
             }
+            .accessibilityHidden(booksVisible)
             .overlay(alignment: .bottom) {
                 VStack(spacing: 10) {
                     if let toast = store.toast {
@@ -45,18 +65,26 @@ struct RootView: View {
                             .glass(in: Capsule(), theme: theme, interactive: false)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
-                    if store.selection != nil {
+                    if store.recall != nil {
+                        RecallBar(theme: theme)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    } else if store.selection != nil {
                         SelectionBar(theme: theme)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
                 }
                 .padding(.horizontal, 12)
                 .padding(.bottom, 8)
+                .accessibilityHidden(booksVisible)
+            }
+            .overlay(alignment: .leading) {
+                BookDrawer(theme: theme, width: drawerWidth, drag: $booksDrag)
             }
         }
         .animation(.smooth(duration: 0.28), value: store.barsHidden)
         .animation(.smooth(duration: 0.28), value: store.selection != nil)
         .animation(.smooth(duration: 0.28), value: store.toast)
+        .animation(.smooth(duration: 0.28), value: store.recall?.status.done)
         .statusBarHidden(store.barsHidden)
         .preferredColorScheme(preferredScheme)
         .tint(Color(theme.accent))
@@ -64,7 +92,6 @@ struct RootView: View {
         .sheet(item: $store.sheet) { sheet in
             Group {
                 switch sheet {
-                case .books: BookPicker(theme: theme)
                 case .search: SearchView(theme: theme)
                 case .settings: SettingsView(theme: theme)
                 case .study: StudyView(theme: theme)
@@ -104,7 +131,7 @@ struct TopBar: View {
         HStack(spacing: 10) {
             HStack(spacing: 0) {
                 Button {
-                    store.sheet = .books
+                    store.booksOpen = true
                 } label: {
                     ViewThatFits(in: .horizontal) {
                         referenceLabel(store.title)

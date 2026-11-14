@@ -56,6 +56,8 @@ pub struct SettingsUi {
     recording: Option<&'static str>,
     /// Data: Erase… was pressed and waits for the second click.
     confirm_erase: bool,
+    /// Data: the study library folder and how its sync stands (set by the app each frame).
+    pub sync: crate::study_sync::SyncView,
 }
 
 impl SettingsUi {
@@ -73,6 +75,7 @@ impl SettingsUi {
             shortcut_filter: String::new(),
             recording: None,
             confirm_erase: false,
+            sync: Default::default(),
         }
     }
 
@@ -135,14 +138,14 @@ impl SettingsUi {
                 .text_color(p.ink)
                 .frame(egui::Frame::NONE)
                 .margin(egui::Margin::ZERO)
-                .vertical_align(egui::Align::Center),
+                .align(egui::Align2::LEFT_CENTER),
         );
         let (_, resp) = Button::new(Kind::Secondary, "Restore Defaults").show_right(
             ui,
             p,
             tools.right(),
             tools.center().y,
-            ui.id().with("restore-shortcuts"),
+            ui.scope_id().with("restore-shortcuts"),
         );
         if resp.clicked() {
             settings.shortcuts.clear();
@@ -173,7 +176,7 @@ impl SettingsUi {
                         p,
                         cancel,
                         icons::close,
-                        ui.id().with(("cancel-record", s.id)),
+                        ui.scope_id().with(("cancel-record", s.id)),
                     )
                     .clicked()
                     {
@@ -207,7 +210,8 @@ impl SettingsUi {
                     vec2(total.max(40.0), 24.0),
                 );
                 if s.default.is_some() {
-                    let resp = ui.interact(area.expand(4.0), ui.id().with(("record", s.id)), Sense::click());
+                    let resp =
+                        ui.interact(area.expand(4.0), ui.scope_id().with(("record", s.id)), Sense::click());
                     if resp.hovered() {
                         ui.painter().rect_filled(area.expand(4.0), 8.0, p.fill);
                     }
@@ -297,7 +301,7 @@ impl SettingsUi {
                 row_label(ui, p, r, "Stored in", None);
                 let (b, resp) = Button::new(Kind::Secondary, crate::platform::SHOW_IN_FILE_BROWSER)
                     .small()
-                    .show_right(ui, p, r.right() - 16.0, r.center().y, ui.id().with("reveal"));
+                    .show_right(ui, p, r.right() - 16.0, r.center().y, ui.scope_id().with("reveal"));
                 if resp.clicked() {
                     actions.push(Action::RevealDataDir);
                 }
@@ -323,6 +327,8 @@ impl SettingsUi {
         });
         ui.add_space(24.0);
 
+        self.study_library(ui, p, study, actions);
+
         group_title(ui, p, "Export");
         rows_card(ui, p, &[56.0, 56.0, 44.0], |ui, i, r| {
             let right = r.right() - 16.0;
@@ -338,7 +344,7 @@ impl SettingsUi {
                     let (_, resp) = Button::new(Kind::Secondary, "Export…")
                         .small()
                         .icon(icons::upload)
-                        .show_right(ui, p, right, cy, ui.id().with(("export", i)));
+                        .show_right(ui, p, right, cy, ui.scope_id().with(("export", i)));
                     if resp.clicked() {
                         actions.push(Action::Export(kind));
                     }
@@ -380,7 +386,7 @@ impl SettingsUi {
                         ui,
                         p,
                         pos2(right, cy),
-                        ui.id().with("backup-auto"),
+                        ui.scope_id().with("backup-auto"),
                         &mut settings.backup_auto,
                     );
                 }
@@ -388,8 +394,14 @@ impl SettingsUi {
                     row_label(ui, p, r, "Frequency", None);
                     let field = Rect::from_min_size(pos2(right - 160.0, cy - 16.0), vec2(160.0, 32.0));
                     let value = if settings.backup_weekly { "Weekly" } else { "Daily" };
-                    let resp =
-                        widgets::select_field(ui, p, field, value, None, ui.id().with("backup-frequency"));
+                    let resp = widgets::select_field(
+                        ui,
+                        p,
+                        field,
+                        value,
+                        None,
+                        ui.scope_id().with("backup-frequency"),
+                    );
                     crate::menu::popup(&resp, p).show(|ui| {
                         ui.set_min_width(160.0);
                         if ui.selectable_label(!settings.backup_weekly, "Daily").clicked() {
@@ -408,7 +420,7 @@ impl SettingsUi {
                             let day = crate::time::day_start(at);
                             let when = if day == crate::time::day_start(now) {
                                 "Today".to_string()
-                            } else if day == crate::time::day_start(now) - 86_400 {
+                            } else if day == crate::time::days_before(crate::time::day_start(now), 1) {
                                 "Yesterday".to_string()
                             } else {
                                 crate::time::short_date(at)
@@ -424,7 +436,7 @@ impl SettingsUi {
                     let (_, resp) = Button::new(Kind::Secondary, "Import Backup…")
                         .small()
                         .icon(icons::download)
-                        .show_right(ui, p, right, cy, ui.id().with("import-backup"));
+                        .show_right(ui, p, right, cy, ui.scope_id().with("import-backup"));
                     if resp.clicked() {
                         actions.push(Action::ImportStudy);
                     }
@@ -449,7 +461,7 @@ impl SettingsUi {
                     p,
                     right,
                     cy,
-                    ui.id().with("erase-confirm"),
+                    ui.scope_id().with("erase-confirm"),
                 );
                 if resp.clicked() {
                     actions.push(Action::EraseStudy);
@@ -460,7 +472,7 @@ impl SettingsUi {
                     p,
                     b.left() - 8.0,
                     cy,
-                    ui.id().with("erase-cancel"),
+                    ui.scope_id().with("erase-cancel"),
                 );
                 if cancel.clicked() {
                     self.confirm_erase = false;
@@ -471,20 +483,155 @@ impl SettingsUi {
                     p,
                     r,
                     "Erase all study data",
-                    Some("Highlights, notes, bookmarks, plans and history. Translations stay."),
+                    Some(
+                        "Highlights, notes, bookmarks, plans, memorised passages and history. Translations stay.",
+                    ),
                 );
                 let (_, resp) = Button::new(Kind::Destructive, "Erase…").small().show_right(
                     ui,
                     p,
                     right,
                     cy,
-                    ui.id().with("erase"),
+                    ui.scope_id().with("erase"),
                 );
                 if resp.clicked() {
                     self.confirm_erase = true;
                 }
             }
         });
+    }
+
+    /// Data → Study Library (beta): the folder the study syncs with, how that stands, and the
+    /// copies kept of notes edited on two devices.
+    fn study_library(&self, ui: &mut Ui, p: &Palette, study: &StudyStore, actions: &mut Vec<Action>) {
+        group_title(ui, p, "Study Library (beta)");
+        let view = &self.sync;
+        match &view.folder {
+            None => rows_card(ui, p, &[56.0], |ui, _, r| {
+                row_label(
+                    ui,
+                    p,
+                    r,
+                    "Sync with a folder",
+                    Some(
+                        "Keep your study in iCloud Drive, Dropbox or Syncthing to use it on your other devices.",
+                    ),
+                );
+                let (_, resp) = Button::new(Kind::Secondary, "Choose Folder…")
+                    .small()
+                    .icon(icons::tray)
+                    .show_right(ui, p, r.right() - 16.0, r.center().y, ui.scope_id().with("library-choose"));
+                if resp.clicked() {
+                    actions.push(Action::ChooseStudyLibrary);
+                }
+            }),
+            Some(folder) => rows_card(ui, p, &[44.0, 56.0], |ui, i, r| {
+                let right = r.right() - 16.0;
+                let cy = r.center().y;
+                if i == 0 {
+                    row_label(ui, p, r, "Location", None);
+                    let (stop, resp) = Button::new(Kind::Plain, "Stop Syncing").small().show_right(
+                        ui,
+                        p,
+                        right,
+                        cy,
+                        ui.scope_id().with("library-stop"),
+                    );
+                    if resp.clicked() {
+                        actions.push(Action::StopStudyLibrary);
+                    }
+                    let (change, resp) = Button::new(Kind::Secondary, "Change…").small().show_right(
+                        ui,
+                        p,
+                        stop.left() - 8.0,
+                        cy,
+                        ui.scope_id().with("library-change"),
+                    );
+                    if resp.clicked() {
+                        actions.push(Action::ChooseStudyLibrary);
+                    }
+                    let painter = ui.painter();
+                    let path = crate::pages::elide(
+                        painter,
+                        &tilde(folder),
+                        &FontId::monospace(12.0),
+                        change.left() - 10.0 - (r.left() + 120.0),
+                    );
+                    painter.text(
+                        pos2(change.left() - 10.0, cy),
+                        Align2::RIGHT_CENTER,
+                        path,
+                        FontId::monospace(12.0),
+                        p.ink_2,
+                    );
+                } else {
+                    row_label(ui, p, r, &view.label, view.detail.as_deref());
+                    let label = if view.syncing { "Syncing…" } else { "Sync Now" };
+                    let (_, resp) = Button::new(Kind::Secondary, label).small().show_right(
+                        ui,
+                        p,
+                        right,
+                        cy,
+                        ui.scope_id().with("library-sync"),
+                    );
+                    if resp.clicked() && !view.syncing {
+                        actions.push(Action::SyncStudyLibrary);
+                    }
+                }
+            }),
+        }
+        ui.add_space(24.0);
+
+        let copies = study.note_conflicts();
+        if copies.is_empty() {
+            return;
+        }
+        group_title(ui, p, "Conflict copies");
+        let rows = vec![56.0; copies.len()];
+        rows_card(ui, p, &rows, |ui, i, r| {
+            let (v, copy) = &copies[i];
+            let right = r.right() - 16.0;
+            let cy = r.center().y;
+            let (dismiss, resp) = Button::new(Kind::Plain, "Dismiss").small().show_right(
+                ui,
+                p,
+                right,
+                cy,
+                ui.scope_id().with(("conflict-dismiss", i)),
+            );
+            if resp.clicked() {
+                actions.push(Action::DismissConflict(*v, copy.stamp.clone()));
+            }
+            let (keep, resp) = Button::new(Kind::Secondary, "Use This").small().show_right(
+                ui,
+                p,
+                dismiss.left() - 8.0,
+                cy,
+                ui.scope_id().with(("conflict-use", i)),
+            );
+            if resp.clicked() {
+                actions.push(Action::UseConflict(*v, copy.stamp.clone()));
+            }
+            let painter = ui.painter();
+            let x = r.left() + 16.0;
+            let width = keep.left() - 16.0 - x;
+            let current = study.note(*v).map_or("deleted", |n| n.body.as_str());
+            let title = crate::pages::elide(
+                painter,
+                &format!("{v} · now “{}”", first_line(current)),
+                &text::UI.font(),
+                width,
+            );
+            painter.text(pos2(x, cy - 8.0), Align2::LEFT_CENTER, title, text::UI.font(), p.ink);
+            let body = crate::pages::elide(
+                painter,
+                &format!("Other version: “{}”", first_line(&copy.body)),
+                &text::SMALL.font(),
+                width,
+            );
+            painter.text(pos2(x, cy + 10.0), Align2::LEFT_CENTER, body, text::SMALL.font(), p.ink_3);
+        });
+        ui.add_space(24.0);
     }
 
     /// Puts a shortcut row into recording (demo steps).
@@ -511,7 +658,7 @@ impl SettingsUi {
         if crate::offscreen() {
             // A screenshot of the window: fill the main window with it.
             let screen = ctx.content_rect();
-            egui::Area::new(egui::Id::new("settings-offscreen"))
+            egui::Area::new(egui::Id::unique("settings-offscreen"))
                 .order(egui::Order::Foreground)
                 .fixed_pos(screen.min)
                 .show(ctx, |ui| {
@@ -580,7 +727,7 @@ impl SettingsUi {
         let mut x = header.center().x - tabs_w / 2.0;
         for (tab, label, icon) in TABS {
             let r = Rect::from_min_size(pos2(x, rect.top() + TITLE_BAR), vec2(76.0, 52.0));
-            let resp = ui.interact(r, ui.id().with(("settings-tab", label)), Sense::click());
+            let resp = ui.interact(r, ui.scope_id().with(("settings-tab", label)), Sense::click());
             let on = self.tab == tab;
             if on {
                 ui.painter().rect_filled(r, 10.0, p.accent_soft);
@@ -678,8 +825,14 @@ impl SettingsUi {
                     .map(|(_, a, n)| format!("{n} ({a})"))
                     .unwrap_or_default();
                 let field = Rect::from_min_size(pos2(right - 260.0, r.center().y - 16.0), vec2(260.0, 32.0));
-                let resp =
-                    widgets::select_field(ui, p, field, &current, None, ui.id().with("default-translation"));
+                let resp = widgets::select_field(
+                    ui,
+                    p,
+                    field,
+                    &current,
+                    None,
+                    ui.scope_id().with("default-translation"),
+                );
                 crate::menu::popup(&resp, p).show(|ui| {
                     ui.set_min_width(260.0);
                     for (id, a, n) in &ids {
@@ -695,7 +848,7 @@ impl SettingsUi {
                     p,
                     right,
                     r.center().y,
-                    ui.id().with("edit-parallel"),
+                    ui.scope_id().with("edit-parallel"),
                 );
                 let mut cols = vec![abbrev_of(&settings.translation)];
                 cols.extend(settings.parallel.iter().map(|id| abbrev_of(id)));
@@ -786,7 +939,7 @@ impl SettingsUi {
                     let text = if self.show_all_bundled { "Show Fewer" } else { "Show All" };
                     if Button::new(Kind::Ghost, text)
                         .small()
-                        .show_right(ui, p, right, r.center().y, ui.id().with("show-all"))
+                        .show_right(ui, p, right, r.center().y, ui.scope_id().with("show-all"))
                         .1
                         .clicked()
                     {
@@ -847,7 +1000,7 @@ impl SettingsUi {
                             p,
                             x,
                             r.center().y,
-                            ui.id().with(("remove", &m.id)),
+                            ui.scope_id().with(("remove", &m.id)),
                         );
                         if resp.clicked() {
                             remove = Some(m.id.clone());
@@ -904,7 +1057,7 @@ impl SettingsUi {
             row_label(ui, p, r, "Add a translation you own", Some("USFM, OSIS, Zefania or SWORD · ⌘I"));
             let (folder, resp) = Button::new(Kind::Secondary, "Import Folder…")
                 .icon(icons::folder)
-                .show_right(ui, p, r.right() - 16.0, r.center().y, ui.id().with("import-folder"));
+                .show_right(ui, p, r.right() - 16.0, r.center().y, ui.scope_id().with("import-folder"));
             if resp.clicked()
                 && let Some(path) = rfd::FileDialog::new()
                     .set_title("Import a USFM folder or an unpacked SWORD module")
@@ -917,7 +1070,7 @@ impl SettingsUi {
                 p,
                 folder.left() - 8.0,
                 r.center().y,
-                ui.id().with("import-file"),
+                ui.scope_id().with("import-file"),
             );
             if resp.clicked()
                 && let Some(path) = rfd::FileDialog::new()
@@ -985,7 +1138,7 @@ impl SettingsUi {
                         field_at(x),
                         &mut self.esv_key,
                         "Paste your ESV API key",
-                        egui::Id::new("esv-key"),
+                        egui::Id::unique("esv-key"),
                     );
                 }
                 1 => {
@@ -1005,7 +1158,7 @@ impl SettingsUi {
                         field_at(x),
                         &mut self.nlt_key,
                         "Optional key (higher limits)",
-                        egui::Id::new("nlt-key"),
+                        egui::Id::unique("nlt-key"),
                     );
                 }
                 2 => {
@@ -1040,7 +1193,7 @@ impl SettingsUi {
                         field_at(x),
                         &mut self.apibible_key,
                         "API.Bible key",
-                        egui::Id::new("api-bible-key"),
+                        egui::Id::unique("api-bible-key"),
                     );
                 }
                 _ => {
@@ -1051,7 +1204,7 @@ impl SettingsUi {
                         .small()
                         .icon(icons::list)
                         .enabled(enabled)
-                        .show_right(ui, p, right, cy, ui.id().with("list-bibles"));
+                        .show_right(ui, p, right, cy, ui.scope_id().with("list-bibles"));
                     list_bibles = resp.clicked();
                 }
             }
@@ -1155,7 +1308,7 @@ impl SettingsUi {
                     Some(icons::search),
                     false,
                     false,
-                    egui::Id::new("bible-filter"),
+                    egui::Id::unique("bible-filter"),
                 );
                 ui.add_space(8.0);
                 let f = self.bible_filter.to_lowercase();
@@ -1208,7 +1361,13 @@ impl SettingsUi {
                         );
                     } else if Button::new(Kind::Secondary, "Add")
                         .small()
-                        .show_right(ui, p, r.right() - 16.0, r.center().y, ui.id().with(("add-bible", &b.id)))
+                        .show_right(
+                            ui,
+                            p,
+                            r.right() - 16.0,
+                            r.center().y,
+                            ui.scope_id().with(("add-bible", &b.id)),
+                        )
                         .1
                         .clicked()
                     {
@@ -1239,6 +1398,18 @@ impl SettingsUi {
 }
 
 /// A group: a 13 pt semibold title, then its content 8 pt below; groups are 24 pt apart.
+/// A path with the home folder as `~`.
+fn tilde(path: &std::path::Path) -> String {
+    let home = dirs::home_dir().map(|h| h.to_string_lossy().into_owned()).unwrap_or_default();
+    let path = path.to_string_lossy().into_owned();
+    if !home.is_empty() && path.starts_with(&home) { format!("~{}", &path[home.len()..]) } else { path }
+}
+
+/// A note's first line, for a one-line row.
+fn first_line(body: &str) -> &str {
+    body.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("")
+}
+
 fn group_title(ui: &mut Ui, p: &Palette, title: &str) {
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::hover());
     ui.painter().text(r.left_center(), Align2::LEFT_CENTER, title, text::UI_STRONG.font(), p.ink);
@@ -1386,7 +1557,7 @@ fn reading(ui: &mut Ui, library: &Library, settings: &mut Settings, actions: &mu
             0 => {
                 row_label(ui, p, r, "Font", None);
                 let field = Rect::from_min_size(pos2(right - 220.0, cy - 16.0), vec2(220.0, 32.0));
-                let resp = widgets::select_field(ui, p, field, "Literata", None, ui.id().with("font"));
+                let resp = widgets::select_field(ui, p, field, "Literata", None, ui.scope_id().with("font"));
                 crate::menu::popup(&resp, p).show(|ui| {
                     let _ = ui.selectable_label(true, "Literata");
                 });
@@ -1418,7 +1589,16 @@ fn reading(ui: &mut Ui, library: &Library, settings: &mut Settings, actions: &mu
                     FontId::new(13.0, theme::family(theme::SERIF)),
                     p.ink_2,
                 );
-                widgets::slider(ui, p, slider, ui.id().with("size"), &mut typo.size, 14.0..=32.0, 1.0, 7);
+                widgets::slider(
+                    ui,
+                    p,
+                    slider,
+                    ui.scope_id().with("size"),
+                    &mut typo.size,
+                    14.0..=32.0,
+                    1.0,
+                    7,
+                );
             }
             2 => {
                 row_label(ui, p, r, "Line spacing", None);
@@ -1436,7 +1616,7 @@ fn reading(ui: &mut Ui, library: &Library, settings: &mut Settings, actions: &mu
                     ui,
                     p,
                     slider,
-                    ui.id().with("spacing"),
+                    ui.scope_id().with("spacing"),
                     &mut typo.line_height,
                     1.3..=2.0,
                     0.05,
@@ -1456,7 +1636,16 @@ fn reading(ui: &mut Ui, library: &Library, settings: &mut Settings, actions: &mu
                 );
                 let slider =
                     Rect::from_min_size(pos2(right - 44.0 - 12.0 - 256.0, cy - 12.0), vec2(256.0, 24.0));
-                if widgets::slider(ui, p, slider, ui.id().with("length"), &mut chars, 45.0..=90.0, 1.0, 0) {
+                if widgets::slider(
+                    ui,
+                    p,
+                    slider,
+                    ui.scope_id().with("length"),
+                    &mut chars,
+                    45.0..=90.0,
+                    1.0,
+                    0,
+                ) {
                     typo.measure = chars / CHARS_PER_EM;
                 }
             }
@@ -1477,7 +1666,7 @@ fn reading(ui: &mut Ui, library: &Library, settings: &mut Settings, actions: &mu
                     ui,
                     p,
                     right,
-                    ui.id().with("verses"),
+                    ui.scope_id().with("verses"),
                     &["Paragraphs", "Verse per line"],
                     selected,
                 ) {
@@ -1486,19 +1675,19 @@ fn reading(ui: &mut Ui, library: &Library, settings: &mut Settings, actions: &mu
             }
             1 => {
                 row_label(ui, p, r, "Words of Christ in red", Some("⌘R"));
-                widgets::toggle(ui, p, right, ui.id().with("red"), &mut red);
+                widgets::toggle(ui, p, right, ui.scope_id().with("red"), &mut red);
             }
             2 => {
                 row_label(ui, p, r, "Verse numbers", None);
-                widgets::toggle(ui, p, right, ui.id().with("numbers"), &mut typo.verse_numbers);
+                widgets::toggle(ui, p, right, ui.scope_id().with("numbers"), &mut typo.verse_numbers);
             }
             3 => {
                 row_label(ui, p, r, "Section headings", Some("Where the translation has them (BSB, WEB)"));
-                widgets::toggle(ui, p, right, ui.id().with("headings"), &mut typo.headings);
+                widgets::toggle(ui, p, right, ui.scope_id().with("headings"), &mut typo.headings);
             }
             _ => {
                 row_label(ui, p, r, "Justify text", None);
-                widgets::toggle(ui, p, right, ui.id().with("justify"), &mut typo.justify);
+                widgets::toggle(ui, p, right, ui.scope_id().with("justify"), &mut typo.justify);
             }
         }
     });
@@ -1517,7 +1706,7 @@ fn reading(ui: &mut Ui, library: &Library, settings: &mut Settings, actions: &mu
     let label = "Reset to Defaults";
     let w = widgets::secondary_button_width(ui, label);
     let b = Rect::from_min_size(pos2(r.right() - w, r.top()), vec2(w, 32.0));
-    if widgets::secondary_button(ui, p, b, label, ui.id().with("reset")).clicked() {
+    if widgets::secondary_button(ui, p, b, label, ui.scope_id().with("reset")).clicked() {
         *typo = Typography::default();
     }
 }
@@ -1539,7 +1728,7 @@ fn theme_cards(ui: &mut Ui, settings: &mut Settings, actions: &mut Vec<Action>) 
             Rect::from_min_size(pos2(row.left() + i as f32 * (136.0 + gap), row.top()), vec2(136.0, 84.0));
         let resp = ui.interact(
             card.union(Rect::from_min_size(card.left_bottom(), vec2(136.0, 24.0))),
-            ui.id().with(("theme", i)),
+            ui.scope_id().with(("theme", i)),
             Sense::click(),
         );
         let on = match t {
@@ -1626,7 +1815,7 @@ fn appearance(ui: &mut Ui, settings: &mut Settings, actions: &mut Vec<Action>) {
                 [(icons::sun, "Light"), (icons::page, "Sepia"), (icons::moon, "Dark"), (icons::auto, "Auto")];
             let selected = if settings.theme_system { 3 } else { settings.theme as usize };
             let right = pos2(r.right() - 16.0, r.center().y);
-            if let Some(k) = icon_segmented(ui, p, right, ui.id().with("theme-seg"), &items, selected) {
+            if let Some(k) = icon_segmented(ui, p, right, ui.scope_id().with("theme-seg"), &items, selected) {
                 if k == 3 {
                     settings.theme_system = true;
                 } else {
@@ -1640,7 +1829,7 @@ fn appearance(ui: &mut Ui, settings: &mut Settings, actions: &mut Vec<Action>) {
             let x0 = r.right() - 16.0 - (5.0 * 52.0 + 4.0 * 4.0);
             for (k, a) in theme::Accent::ALL.into_iter().enumerate() {
                 let col = Rect::from_min_size(pos2(x0 + 56.0 * k as f32, r.top() + 10.0), vec2(52.0, 44.0));
-                let resp = ui.interact(col, ui.id().with(("accent", k)), Sense::click());
+                let resp = ui.interact(col, ui.scope_id().with(("accent", k)), Sense::click());
                 let c = pos2(col.center().x, col.top() + 11.0);
                 let on = settings.accent == a;
                 let painter = ui.painter();
@@ -1677,7 +1866,7 @@ fn appearance(ui: &mut Ui, settings: &mut Settings, actions: &mut Vec<Action>) {
                 ui,
                 p,
                 right,
-                ui.id().with("toolbar-translation"),
+                ui.scope_id().with("toolbar-translation"),
                 &mut settings.toolbar_translation,
             );
         }
@@ -1688,7 +1877,7 @@ fn appearance(ui: &mut Ui, settings: &mut Settings, actions: &mut Vec<Action>) {
                 ui,
                 p,
                 right,
-                ui.id().with("sidebar-style"),
+                ui.scope_id().with("sidebar-style"),
                 &["Floating", "Attached"],
                 usize::from(settings.sidebar_attached),
             );
@@ -1703,7 +1892,7 @@ fn appearance(ui: &mut Ui, settings: &mut Settings, actions: &mut Vec<Action>) {
                 ui,
                 p,
                 right,
-                ui.id().with("book-grouping"),
+                ui.scope_id().with("book-grouping"),
                 &BookGrouping::ALL.map(BookGrouping::label),
                 settings.book_grouping as usize,
             );
@@ -1734,7 +1923,7 @@ fn appearance(ui: &mut Ui, settings: &mut Settings, actions: &mut Vec<Action>) {
             None,
             false,
             false,
-            egui::Id::new(("highlight-name", i)),
+            egui::Id::unique(("highlight-name", i)),
         );
         let key = (i + 1).to_string();
         let kw = widgets::keycap_width(ui.painter(), &key);
@@ -1757,12 +1946,12 @@ fn appearance(ui: &mut Ui, settings: &mut Settings, actions: &mut Vec<Action>) {
         if i == 0 {
             row_label(ui, p, r, "Reduce motion", Some("Follows the system setting by default"));
             let mut on = settings.reduce_motion;
-            if widgets::toggle(ui, p, right, ui.id().with("reduce-motion"), &mut on).clicked() {
+            if widgets::toggle(ui, p, right, ui.scope_id().with("reduce-motion"), &mut on).clicked() {
                 actions.push(Action::SetReduceMotion(on));
             }
         } else {
             row_label(ui, p, r, "Flash a verse after jumping to it", None);
-            widgets::toggle(ui, p, right, ui.id().with("flash-jumps"), &mut settings.flash_jumps);
+            widgets::toggle(ui, p, right, ui.scope_id().with("flash-jumps"), &mut settings.flash_jumps);
         }
     });
 }
@@ -1866,10 +2055,10 @@ fn about(ui: &mut Ui, p: &Palette) {
     let (wa, wb) = (check.width(&painter), notes.width(&painter));
     let x = cx - (wa + 8.0 + wb) / 2.0;
     let cy = r.top() + 200.0 + 16.0;
-    if check.show_left(ui, p, x, cy, ui.id().with("check-updates")).1.clicked() {
+    if check.show_left(ui, p, x, cy, ui.scope_id().with("check-updates")).1.clicked() {
         crate::updater::check_for_updates(false);
     }
-    if notes.show_left(ui, p, x + wa + 8.0, cy, ui.id().with("release-notes")).1.clicked() {
+    if notes.show_left(ui, p, x + wa + 8.0, cy, ui.scope_id().with("release-notes")).1.clicked() {
         crate::app::open_url(crate::updater::RELEASES);
     }
     crate::update_ui::about(ui, p);
@@ -1995,7 +2184,7 @@ impl Trailing<'_> {
         match self {
             Trailing::Button(kind, label) => {
                 let (b, resp) =
-                    Button::new(*kind, label).small().show_right(ui, p, right, cy, ui.id().with(id));
+                    Button::new(*kind, label).small().show_right(ui, p, right, cy, ui.scope_id().with(id));
                 (b.left(), resp.clicked())
             }
             Trailing::Badge(label) => {
@@ -2032,6 +2221,6 @@ fn key_field(ui: &mut Ui, p: &Palette, rect: Rect, value: &mut String, placehold
             .text_color(p.ink)
             .frame(egui::Frame::NONE)
             .margin(egui::Margin::ZERO)
-            .vertical_align(egui::Align::Center),
+            .align(egui::Align2::LEFT_CENTER),
     );
 }
