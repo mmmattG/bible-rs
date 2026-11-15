@@ -455,7 +455,8 @@ final class BibleUITests: XCTestCase {
         XCTAssertTrue(five.waitForExistence(timeout: 3))
         XCTAssertFalse(app.buttons["Romans 1"].exists, "only the chosen book shows chapters")
         XCTAssertEqual(app.buttons["Galatians 1"].frame.minY, galatians.frame.maxY, accuracy: 12)
-        XCTAssertGreaterThanOrEqual(five.frame.width, 40, "chapters stay tappable in a column")
+        XCTAssertLessThan(
+            app.buttons["Galatians 1"].frame.minX, galatians.frame.minX - 40, "chapters take the full width")
         five.tap()
         expectChapter("Galatians 5")
         XCTAssertTrue(verse("Galatians 5:22").label.contains("fruit of the Spirit"))

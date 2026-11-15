@@ -1,10 +1,10 @@
 import SwiftUI
 
 /// The books by section of the canon: the sections under their testaments, the open section's
-/// books folded out beneath it, and the chosen book's chapters straight beneath the book, so a
-/// chapter is chosen where the book was. It opens on the book being read, so its chapters are one
-/// tap away and any chapter at most three. Another section opens to its books alone, so none of
-/// them is pushed down behind chapters nobody asked for.
+/// books folded out beneath it, and the chosen book's chapters straight beneath the book across
+/// the full width, so a chapter is chosen where the book was. It opens on the book being read, so
+/// its chapters are one tap away and any chapter at most three. Another section opens to its books
+/// alone, so none of them is pushed down behind chapters nobody asked for.
 struct BookSections: View {
     @Environment(Store.self) private var store
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -81,40 +81,31 @@ struct BookSections: View {
     /// Each testament's sections, the open one with its books beneath it, and the chosen book
     /// with its chapters.
     private var browse: some View {
-        let layout =
-            stacked
-            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 0))
-            : AnyLayout(HStackLayout(alignment: .top, spacing: 0))
-        return layout {
-            testament("Old Testament", store.sections.filter { !$0.newTestament })
-            testament("New Testament", store.sections.filter(\.newTestament))
+        SpannedColumns(columns: stacked ? 1 : 2, spacing: 2) {
+            testament("Old Testament", store.sections.filter { !$0.newTestament }, column: 0)
+            testament("New Testament", store.sections.filter(\.newTestament), column: stacked ? 0 : 1)
         }
         .padding(.horizontal, 10)
+        .accessibilityElement(children: .contain)
     }
 
-    private func testament(_ title: String, _ sections: [BibleSection]) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            header(title)
-            ForEach(sections, id: \.name) { s in
-                sectionRow(s)
-                if s.name == openSection {
-                    ForEach(store.bookList.filter { s.contains($0) }, id: \.index) { b in
-                        bookRow(b)
-                        if b.index == book.index && b.chapters > 1 {
-                            // Three across in a testament's column on a phone.
-                            ChapterGrid(
-                                book: b, reading: store.position.chapter, theme: theme, go: go, cell: 40, spacing: 6
-                            )
-                            .padding(.leading, bookIndent)
+    @ViewBuilder
+    private func testament(_ title: String, _ sections: [BibleSection], column: Int) -> some View {
+        header(title).row(column: column)
+        ForEach(sections, id: \.name) { s in
+            sectionRow(s).row(column: column)
+            if s.name == openSection {
+                ForEach(store.bookList.filter { s.contains($0) }, id: \.index) { b in
+                    bookRow(b).row(column: column)
+                    if b.index == book.index && b.chapters > 1 {
+                        ChapterGrid(book: b, reading: store.position.chapter, theme: theme, go: go)
+                            .padding(.horizontal, 10)
                             .padding(.vertical, 6)
-                        }
+                            .row(column: column, spansColumns: true)
                     }
                 }
             }
         }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        // VoiceOver reads down one testament, then the other.
-        .accessibilityElement(children: .contain)
     }
 
     /// A section's row, which folds its books in and out: the open one is bold, and the one
@@ -212,4 +203,66 @@ struct BookSections: View {
     /// The scroll ids of a section's row and a book's row.
     private static func sectionID(_ name: String) -> String { "section-\(name)" }
     private static func id(_ book: BookInfo) -> String { "book-\(book.index)" }
+}
+
+/// Rows in equal columns, each filling downwards. A row that spans the columns sits beneath the
+/// rows before it in its own column, and pushes down the other columns' rows that would cross it.
+private struct SpannedColumns: Layout {
+    let columns: Int
+    let spacing: CGFloat
+
+    struct Column: LayoutValueKey {
+        static let defaultValue = 0
+    }
+
+    struct SpansColumns: LayoutValueKey {
+        static let defaultValue = false
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.replacingUnspecifiedDimensions().width
+        let height = frames(width: width, subviews: subviews).map(\.maxY).max() ?? 0
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for (subview, frame) in zip(subviews, frames(width: bounds.width, subviews: subviews)) {
+            subview.place(
+                at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                proposal: ProposedViewSize(width: frame.width, height: frame.height))
+        }
+    }
+
+    private func frames(width: CGFloat, subviews: Subviews) -> [CGRect] {
+        let columnWidth = width / CGFloat(columns)
+        var frames = [CGRect](repeating: .zero, count: subviews.count)
+        var span: CGRect?
+        // The spanning row's own column first, so the other columns know where it is.
+        let spanColumn = subviews.first { $0[SpansColumns.self] }?[Column.self]
+        let order = [spanColumn].compactMap { $0 } + (0..<columns).filter { $0 != spanColumn }
+        for column in order {
+            var y: CGFloat = 0
+            for (index, subview) in subviews.enumerated() where subview[Column.self] == column {
+                let spans = subview[SpansColumns.self]
+                let rowWidth = spans ? width : columnWidth
+                let height = subview.sizeThatFits(ProposedViewSize(width: rowWidth, height: nil)).height
+                if let span, y < span.maxY, y + height > span.minY {
+                    y = span.maxY + spacing
+                }
+                frames[index] = CGRect(x: spans ? 0 : CGFloat(column) * columnWidth, y: y, width: rowWidth, height: height)
+                if spans { span = frames[index] }
+                y += height + spacing
+            }
+        }
+        return frames
+    }
+}
+
+extension View {
+    /// Where a row goes in `SpannedColumns`. VoiceOver reads down one column, then the next.
+    fileprivate func row(column: Int, spansColumns: Bool = false) -> some View {
+        layoutValue(key: SpannedColumns.Column.self, value: column)
+            .layoutValue(key: SpannedColumns.SpansColumns.self, value: spansColumns)
+            .accessibilitySortPriority(Double(-column))
+    }
 }

@@ -185,12 +185,9 @@ struct ChapterGrid: View {
     let reading: Int
     let theme: Theme
     let go: (Int) -> Void
-    /// The narrowest a cell may be, and the gap between cells.
-    var cell: CGFloat = 48
-    var spacing: CGFloat = 8
 
     var body: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: cell), spacing: spacing)], spacing: spacing) {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 48), spacing: 8)], spacing: 8) {
             ForEach(1...Int(book.chapters), id: \.self) { n in
                 let index = Int(book.firstChapter) + n - 1
                 let current = index == reading
