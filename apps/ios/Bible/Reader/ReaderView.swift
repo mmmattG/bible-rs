@@ -94,6 +94,14 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate {
     private var recallID: UUID?
     private var recallStatus: RecallStatus?
     private var recallLink: CADisplayLink?
+    private lazy var recallGate = RecallGate(reader: self)
+    private lazy var recallPan: UIPanGestureRecognizer = {
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(recallPanned(_:)))
+        pan.delegate = recallGate
+        pan.isEnabled = false
+        return pan
+    }()
+    private let recallTicks = UISelectionFeedbackGenerator()
     var booksGestureEnabled = true
     private lazy var booksGate = BooksGate(reader: self)
     private lazy var booksPan: UIPanGestureRecognizer = {
@@ -131,6 +139,7 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate {
         tap.delegate = tapGate
         addGestureRecognizer(tap)
         addGestureRecognizer(booksPan)
+        addGestureRecognizer(recallPan)
         isAccessibilityElement = false
     }
 
@@ -528,7 +537,7 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate {
     // MARK: Recall
 
     /// Recalls a memorised passage in place (or stops, with `nil`): its words hidden until a
-    /// tap reveals them, the rest of the text dimmed.
+    /// horizontal drag or a tap reveals them, the rest of the text dimmed.
     func setRecall(_ passage: MemorisedPassage?, id: UUID?, letters: Bool, whole: Bool) {
         guard let passage else {
             if recall != nil || recallRequest != nil { endRecall() }
@@ -545,6 +554,7 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate {
         endRecall()
         recallID = id
         recallRequest = (passage, letters, whole)
+        recallPan.isEnabled = true
         setNeedsLayout()
     }
 
@@ -552,6 +562,7 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate {
         recall = nil
         recallRequest = nil
         recallStatus = nil
+        recallPan.isEnabled = false
         recallLink?.invalidate()
         recallLink = nil
         redrawTiles()
@@ -594,13 +605,6 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate {
         refreshRecall()
     }
 
-    func seekRecall(to progress: Double) {
-        recall?.seek(to: progress)
-        recallLink?.invalidate()
-        recallLink = nil
-        refreshRecall()
-    }
-
     private func showNextWord() {
         recall?.nextWord()
         refreshRecall()
@@ -632,6 +636,50 @@ final class ReaderView: UIScrollView, UIScrollViewDelegate {
         if !moving {
             link.invalidate()
             recallLink = nil
+        }
+    }
+
+    @objc private func recallPanned(_ pan: UIPanGestureRecognizer) {
+        guard let recall else { return }
+        let width = effectiveStyle?.column.width ?? bounds.width
+        switch pan.state {
+        case .began:
+            recallTicks.prepare()
+            recallLink?.invalidate()
+            recallLink = nil
+        case .changed:
+            let dx = pan.translation(in: self).x
+            pan.setTranslation(.zero, in: self)
+            if recall.drag(by: dx, width: width) { recallTicks.selectionChanged() }
+            refreshRecall()
+        case .ended, .cancelled:
+            recall.release()
+            animateRecall()
+        default:
+            break
+        }
+    }
+
+    /// The recall's pan starts only on a sideways drag, and the reader's scrolling waits to see
+    /// whether it does.
+    private final class RecallGate: NSObject, UIGestureRecognizerDelegate {
+        weak var reader: ReaderView?
+
+        init(reader: ReaderView) { self.reader = reader }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard let reader, reader.recall != nil, let pan = gestureRecognizer as? UIPanGestureRecognizer else {
+                return false
+            }
+            let v = pan.velocity(in: reader)
+            return abs(v.x) > abs(v.y)
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer
+        ) -> Bool {
+            guard let reader, reader.recall != nil else { return false }
+            return other === reader.panGestureRecognizer
         }
     }
 

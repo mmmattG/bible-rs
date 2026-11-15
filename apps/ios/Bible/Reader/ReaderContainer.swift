@@ -13,7 +13,6 @@ struct ReaderContainer: UIViewRepresentable {
     let jump: JumpRequest?
     let recall: RecallRun?
     let recallLetters: Bool
-    let recallSeek: RecallSeek?
     let onBooksPan: (UIGestureRecognizer.State, CGFloat, CGFloat) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(store: store) }
@@ -27,7 +26,8 @@ struct ReaderContainer: UIViewRepresentable {
     func updateUIView(_ view: ReaderView, context: Context) {
         let c = context.coordinator
         c.onBooksPan = onBooksPan
-        view.booksGestureEnabled = store.sheet == nil && !store.booksOpen
+        // Recalling, a sideways drag reveals the passage instead.
+        view.booksGestureEnabled = store.sheet == nil && !store.booksOpen && store.recall == nil
         if store.booksOpen && view.isScrollEnabled {
             view.setContentOffset(view.contentOffset, animated: false)
         }
@@ -51,10 +51,6 @@ struct ReaderContainer: UIViewRepresentable {
             view.jump(to: jump.chapter, verse: jump.verse, animated: jump.animated, flash: jump.flash)
         }
         view.setRecall(recall?.passage, id: recall?.id, letters: recallLetters, whole: recall?.whole ?? true)
-        if let recallSeek, recallSeek.run == recall?.id, recallSeek.id != c.recallSeek {
-            c.recallSeek = recallSeek.id
-            view.seekRecall(to: recallSeek.progress)
-        }
     }
 
     @MainActor
@@ -62,7 +58,6 @@ struct ReaderContainer: UIViewRepresentable {
         let store: Store
         var marksVersion = 0
         var jump: UUID?
-        var recallSeek: UUID?
         var onBooksPan: ((UIGestureRecognizer.State, CGFloat, CGFloat) -> Void)?
 
         init(store: Store) { self.store = store }

@@ -389,8 +389,8 @@ passage by reference, each with the estimated chance you'd recall it now, in one
 Fading (the least likely first) or Bible order. Recall goes down the list from the top, or from
 the passage you tap. Nothing is ever due, so you can recall any passage whenever you like.
 
-Recall uses next-word taps and a passage reveal slider. The slider can reveal or hide text,
-including after the whole passage is shown. Page swipes open Books.
+Recalling, tap for the next word, or swipe right anywhere on the page to reveal the passage and
+left to hide it again. Swipes don't open the book drawer while you recall.
 
 Parallel and compare views, import and online translations are Mac-only for now.
 
