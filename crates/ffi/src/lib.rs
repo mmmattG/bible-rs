@@ -269,7 +269,7 @@ pub enum ExportFormat {
 }
 
 /// A passage being memorised.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct MemorisedPassage {
     pub first: VerseRef,
     pub last: VerseRef,
@@ -278,19 +278,37 @@ pub struct MemorisedPassage {
     pub reference: String,
     /// The translation it is learnt in.
     pub translation: String,
-    /// Unix seconds when it is next due.
-    pub due: i64,
+    /// The estimated chance, from 0 to 1, of recalling it now. `None` until its first recall.
+    pub recall_chance: Option<f64>,
 }
 
-impl From<&bible_core::memory::Memorised> for MemorisedPassage {
-    fn from(m: &bible_core::memory::Memorised) -> Self {
+impl MemorisedPassage {
+    fn at(m: &bible_core::memory::Memorised, now: i64) -> Self {
         MemorisedPassage {
             first: m.first.into(),
             last: m.last.into(),
             chapter_index: m.first.chapter_idx().0,
             reference: m.reference(),
             translation: m.translation.clone(),
-            due: m.schedule.due,
+            recall_chance: m.schedule.recall_chance(now),
+        }
+    }
+}
+
+/// How a list of memorised passages is ordered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MemoryOrder {
+    /// The least likely to be recalled first, led by those never recalled.
+    Fading,
+    /// As the Bible has them.
+    Bible,
+}
+
+impl From<MemoryOrder> for bible_core::memory::MemoryOrder {
+    fn from(order: MemoryOrder) -> Self {
+        match order {
+            MemoryOrder::Fading => bible_core::memory::MemoryOrder::Fading,
+            MemoryOrder::Bible => bible_core::memory::MemoryOrder::Bible,
         }
     }
 }
@@ -677,27 +695,17 @@ impl Bible {
     /// The passage being memorised that a verse is part of.
     pub fn memorised_at(&self, verse: VerseRef) -> Option<MemorisedPassage> {
         let v = verse.core().ok()?;
-        self.study().memorised_at(v).map(Into::into)
+        self.study().memorised_at(v).map(|m| MemorisedPassage::at(m, study::now()))
     }
 
-    /// The passages due by `until` (Unix seconds; the end of the reader's day, so a passage is due
-    /// all of the day it falls on), the longest overdue first.
-    pub fn due_passages(&self, until: i64) -> Vec<MemorisedPassage> {
-        self.study().due(until).into_iter().map(Into::into).collect()
-    }
-
-    /// Every passage being memorised, the soonest due first.
-    pub fn memorised_passages(&self) -> Vec<MemorisedPassage> {
-        self.study().memorised().into_iter().map(Into::into).collect()
-    }
-
-    /// When the passage that starts at `first` would come back after a recall now, for each grade
-    /// (Again, Hard, Good, Easy): "1 day", "3 weeks".
-    pub fn grade_labels(&self, first: VerseRef) -> Vec<String> {
-        let (Ok(v), now) = (first.core(), study::now()) else { return Vec::new() };
-        let study = self.study();
-        let Some(m) = study.memorised_at(v) else { return Vec::new() };
-        m.schedule.preview(now).iter().map(|&due| bible_core::memory::interval_label(now, due)).collect()
+    /// Every passage being memorised, in `order`.
+    pub fn memorised_passages(&self, order: MemoryOrder) -> Vec<MemorisedPassage> {
+        let now = study::now();
+        self.study()
+            .memorised_by(order.into(), now)
+            .into_iter()
+            .map(|m| MemorisedPassage::at(m, now))
+            .collect()
     }
 
     /// Whether `translation` has all of a passage, so recalling it there tests all of it.

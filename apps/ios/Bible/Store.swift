@@ -18,6 +18,7 @@ struct ReaderSettings: Codable, Equatable {
     var bookLayout = BookLayout.allBooks
     /// A recall hints at hidden words with their first letters, rather than showing nothing.
     var recallLetters = true
+    var memoryOrder = MemorySort.fading
     /// Study Library (beta): sync notes, highlights, bookmarks and plans through this app's
     /// iCloud Drive folder. Off until the reader turns it on.
     var studyLibrary = false
@@ -45,6 +46,7 @@ struct ReaderSettings: Codable, Equatable {
         wholeWords = value(.wholeWords, d.wholeWords)
         bookLayout = value(.bookLayout, d.bookLayout)
         recallLetters = value(.recallLetters, d.recallLetters)
+        memoryOrder = value(.memoryOrder, d.memoryOrder)
         studyLibrary = value(.studyLibrary, d.studyLibrary)
     }
 }
@@ -392,25 +394,30 @@ final class Store {
         selection = nil
     }
 
-    /// Due by the end of today: a passage is due all of the day it falls on.
-    var duePassages: [MemorisedPassage] {
-        let calendar = Calendar.current
-        let end = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: .now)) ?? .now
-        return bible.duePassages(until: Int64(end.timeIntervalSince1970))
+    func memorisedPassages(_ sort: MemorySort) -> [MemorisedPassage] {
+        bible.memorisedPassages(order: sort.order)
     }
-    var memorisedPassages: [MemorisedPassage] { bible.memorisedPassages() }
 
-    /// Recalls the passages due now in the reader, or with nothing due, practises them all early.
-    func startRecall() {
-        let due = duePassages
-        let queue = due.isEmpty ? memorisedPassages : due
+    var memorisedCount: Int { memorisedPassages(.bibleOrder).count }
+
+    /// Recalls the memorised passages in the reader, down the Memory list as it is ordered: from
+    /// `passage`, or from the top.
+    func startRecall(from passage: MemorisedPassage? = nil) {
+        let passages = memorisedPassages(settings.memoryOrder)
+        let start = passages.firstIndex { $0.first == passage?.first } ?? 0
+        let queue = Array(passages[start...])
         guard !queue.isEmpty else {
             show("Select verses, then Memorise")
             return
         }
-        if due.isEmpty { show("Nothing is due, so this is extra practice") }
         recall = run(queue)
         showRecalled()
+    }
+
+    func stopMemorising(_ passage: MemorisedPassage) {
+        if study({ try bible.forget(first: passage.first) }) {
+            show("Stopped memorising \(passage.reference)")
+        }
     }
 
     /// Recalls `queue[index]`, in the translation being read.
@@ -437,23 +444,22 @@ final class Store {
         recall?.status = status
     }
 
-    /// When the passage being recalled would come back for each grade: "1 day", "3 weeks".
-    var gradeLabels: [String] {
-        guard let run = recall else { return [] }
-        return bible.gradeLabels(first: run.passage.first)
-    }
-
-    /// Grades the passage and goes on to the next, or ends.
+    /// Grades the passage, says what its recall chance had been, and goes on to the next, or ends.
     func grade(_ grade: RecallGrade) {
         guard let run = recall, run.status.done else { return }
+        let passage = run.passage
+        // Only told once graded, so the estimate can't sway the grade. A passage that came round
+        // again was seen moments ago, so its estimate says nothing.
+        let cameRound = run.queue[..<run.index].contains { $0.first == passage.first }
+        let chance = cameRound ? nil : bible.memorisedAt(verse: passage.first)?.recallChanceLabel
         // A failed save stays on the passage, to grade again.
-        guard study({ try bible.review(first: run.passage.first, grade: grade) }) else { return }
-        // Again stays due: it comes back at the end of this session.
-        let queue = grade == .again ? run.queue + [run.passage] : run.queue
-        next(queue, index: run.index + 1)
+        guard study({ try bible.review(first: passage.first, grade: grade) }) else { return }
+        // Again comes back at the end of this session.
+        let queue = grade == .again ? run.queue + [passage] : run.queue
+        next(queue, index: run.index + 1, graded: chance.map { "\(passage.reference) was at \($0)" })
     }
 
-    /// Goes on from a passage the translation doesn't have all of, without grading it. It stays due.
+    /// Goes on from a passage the translation doesn't have all of, without grading it.
     func skipRecall() {
         guard let run = recall, run.status.unavailable else { return }
         var queue = run.queue
@@ -461,14 +467,19 @@ final class Store {
         next(queue, index: run.index)
     }
 
-    private func next(_ queue: [MemorisedPassage], index: Int) {
+    private func next(_ queue: [MemorisedPassage], index: Int, graded: String? = nil) {
         if index < queue.count {
             recall = run(queue, index: index)
             showRecalled()
+            if let graded { show(graded) }
         } else {
             recall = nil
             let n = Set(queue.map(\.first)).count
-            if n > 0 { show(n == 1 ? "Recalled 1 passage" : "Recalled \(n) passages") }
+            if let graded {
+                show(graded)
+            } else if n > 0 {
+                show(n == 1 ? "Recalled 1 passage" : "Recalled \(n) passages")
+            }
         }
     }
 

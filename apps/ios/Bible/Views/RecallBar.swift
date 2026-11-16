@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 
 /// Along the foot of the reader while recalling: back, the passage, what to do, and once it's all
-/// shown, the grades, each with when the passage would come back.
+/// shown, the grades.
 struct RecallBar: View {
     @Environment(Store.self) private var store
     let theme: Theme
@@ -73,7 +73,7 @@ struct RecallBar: View {
         return status.started ? "Tap for the next word, or slide to check" : "Say it from memory, then tap or slide to check"
     }
 
-    /// On to the next passage, leaving this one due.
+    /// On to the next passage, leaving this one ungraded.
     private var skip: some View {
         Button("Skip") { store.skipRecall() }
             .font(.footnote.weight(.semibold))
@@ -81,7 +81,7 @@ struct RecallBar: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 7)
             .background(Color(theme.accent), in: Capsule())
-            .accessibilityHint("Leaves it due, and goes on to the next passage")
+            .accessibilityHint("Goes on to the next passage without grading this one")
             .accessibilityIdentifier("skip-recall")
     }
 
@@ -110,27 +110,18 @@ struct RecallBar: View {
     }
 
     private var grades: some View {
-        let labels = store.gradeLabels
-        return HStack(spacing: 8) {
-            ForEach(Array([RecallGrade.again, .hard, .good, .easy].enumerated()), id: \.offset) { i, g in
+        HStack(spacing: 8) {
+            ForEach([RecallGrade.again, .hard, .good, .easy], id: \.self) { g in
                 let on = g == .good
                 Button {
                     store.grade(g)
                 } label: {
-                    VStack(spacing: 1) {
-                        Text(g.label)
-                            .font(.subheadline.weight(on ? .semibold : .medium))
-                        if i < labels.count {
-                            Text(labels[i])
-                                .font(.caption2)
-                                .opacity(0.75)
-                        }
-                    }
-                    .foregroundStyle(on ? Color(theme.onAccent) : Color(theme.ink))
-                    .frame(maxWidth: .infinity, minHeight: 48)
-                    .background(on ? Color(theme.accent) : Color(theme.fill), in: Capsule())
+                    Text(g.label)
+                        .font(.subheadline.weight(on ? .semibold : .medium))
+                        .foregroundStyle(on ? Color(theme.onAccent) : Color(theme.ink))
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .background(on ? Color(theme.accent) : Color(theme.fill), in: Capsule())
                 }
-                .accessibilityLabel(i < labels.count ? "\(g.label), back in \(labels[i])" : g.label)
                 .accessibilityIdentifier("grade-\(g.label)")
             }
         }
@@ -251,46 +242,6 @@ private struct RecallProgressSlider: UIViewRepresentable {
             progress = Double(((touch.location(in: self).x - bounds.minX - radius) / width).clamped(to: 0...1))
             sendActions(for: .valueChanged)
         }
-    }
-}
-
-/// In Study: how many memorised passages are due, and the way into recalling them.
-struct RecallRow: View {
-    @Environment(Store.self) private var store
-    @Environment(\.dismiss) private var dismiss
-    let theme: Theme
-
-    var body: some View {
-        let due = store.duePassages.count
-        let total = store.memorisedPassages.count
-        Button {
-            store.startRecall()
-            dismiss()
-        } label: {
-            HStack {
-                Image(systemName: "rectangle.on.rectangle")
-                    .foregroundStyle(Color(theme.accent))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Memory")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Color(theme.ink))
-                    Text(due == 0 ? "\(total) memorised · nothing due" : "\(due) of \(total) due")
-                        .font(.footnote)
-                        .foregroundStyle(Color(theme.ink2))
-                }
-                Spacer()
-                Text(due > 0 ? "Recall" : "Practise")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Color(theme.onAccent))
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 7)
-                    .background(Color(theme.accent), in: Capsule())
-            }
-            .padding(12)
-            .background(Color(theme.fill), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        }
-        .accessibilityIdentifier("recall")
-        .id(store.marksVersion)
     }
 }
 

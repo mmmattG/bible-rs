@@ -81,6 +81,18 @@ fn clamp(x: f64, low: f64, high: f64) -> f64 {
     x.max(low).min(high)
 }
 
+const DECAY: f64 = -W[20];
+
+fn forgetting_factor() -> f64 {
+    round8((RETENTION.ln() / DECAY).exp() - 1.0)
+}
+
+/// FSRS's forgetting curve: the chance a passage of this stability is recalled after
+/// `elapsed_days`. It is [`RETENTION`] once as many days as the stability have passed.
+fn retrievability(stability: f64, elapsed_days: f64) -> f64 {
+    round8((1.0 + forgetting_factor() * elapsed_days / stability).powf(DECAY))
+}
+
 fn initial_difficulty(grade: f64) -> f64 {
     round8(W[4] - ((grade - 1.0) * W[5]).exp() + 1.0)
 }
@@ -95,6 +107,17 @@ impl Schedule {
         self.due <= now
     }
 
+    /// FSRS's estimate, from 0 to 1, that the passage would be recalled at `now`. `None` until
+    /// its first recall. Time counts by the second here, so the estimate falls through the day.
+    pub fn recall_chance(&self, now: i64) -> Option<f64> {
+        let last = self.last_review?;
+        if self.stability <= 0.0 {
+            return None;
+        }
+        let elapsed_days = (now - last).max(0) as f64 / DAY as f64;
+        Some(retrievability(self.stability, elapsed_days))
+    }
+
     /// When the passage would next be due after a recall at `now` graded each way, in
     /// [`Grade::ALL`] order.
     pub fn preview(&self, now: i64) -> [i64; 4] {
@@ -106,11 +129,9 @@ impl Schedule {
         // ts-fsrs counts UTC date boundaries crossed, not whole 24-hour periods.
         let elapsed =
             self.last_review.map_or(0.0, |last| (now.div_euclid(DAY) - last.div_euclid(DAY)).max(0) as f64);
-        let decay = -W[20];
-        let factor = round8((RETENTION.ln() / decay).exp() - 1.0);
-        let interval_modifier = round8((RETENTION.powf(1.0 / decay) - 1.0) / factor);
+        let interval_modifier = round8((RETENTION.powf(1.0 / DECAY) - 1.0) / forgetting_factor());
         let (s, d) = (self.stability, self.difficulty);
-        let retrievability = if s > 0.0 { round8((1.0 + factor * elapsed / s).powf(decay)) } else { 0.0 };
+        let retrievability = if s > 0.0 { retrievability(s, elapsed) } else { 0.0 };
         let reviewed = self.last_review.is_some();
         let same_day = reviewed && elapsed == 0.0;
         // The last grade was Again (it left the passage due at once): relearning, as ts-fsrs has it.
@@ -189,6 +210,15 @@ pub fn interval_label(now: i64, due: i64) -> String {
         _ => ((days as f64 / 365.0).round() as i64, "year"),
     };
     if n == 1 { format!("1 {unit}") } else { format!("{n} {unit}s") }
+}
+
+/// How a list of memorised passages is ordered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryOrder {
+    /// The least likely to be recalled first, led by those never recalled.
+    Fading,
+    /// As the Bible has them.
+    Bible,
 }
 
 /// A passage being memorised: verses `first..=last` of one chapter, learnt in one translation.
@@ -452,6 +482,18 @@ mod tests {
         let lapsed = s.next(Grade::Again, s.due);
         assert_eq!(lapsed.lapses, 1);
         assert!(lapsed.due - s.due < *gaps.last().unwrap());
+    }
+
+    #[test]
+    fn recall_chance_starts_whole_and_fades_to_the_retention_at_the_stability() {
+        assert_eq!(Schedule::new(NOW).recall_chance(NOW), None, "never recalled");
+        let s = Schedule::new(NOW).next(Grade::Good, NOW);
+        assert_eq!(s.recall_chance(NOW), Some(1.0));
+        let at = |days: f64| s.recall_chance(NOW + (days * DAY as f64) as i64).unwrap();
+        assert!((at(s.stability) - RETENTION).abs() < 1e-4, "{}", at(s.stability));
+        assert!(at(0.5) < 1.0 && at(0.5) > at(1.0), "it fades within a day");
+        assert!(at(30.0) < at(10.0));
+        assert_eq!(s.recall_chance(NOW - DAY), Some(1.0), "a clock set back");
     }
 
     #[test]
