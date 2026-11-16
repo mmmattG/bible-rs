@@ -198,118 +198,45 @@ final class BibleUITests: XCTestCase {
         XCTAssertFalse(app.buttons["close-books"].exists)
     }
 
-    func testRecallTapAndSliderKeepTheirPlaceWhenOpeningBooks() {
+    func testRecallSwipeRevealsAndHidesThePassageWithoutOpeningBooks() {
         startRecall()
-        XCTAssertTrue(app.buttons["end-recall"].waitForExistence(timeout: 3))
-        XCTAssertTrue(recallSlider.exists)
+        XCTAssertTrue(app.staticTexts["Say it from memory, then tap or swipe to check"].waitForExistence(timeout: 3))
         verse("John 1:1").tap()
-        XCTAssertTrue(app.staticTexts["Tap for the next word, or slide to check"].waitForExistence(timeout: 3))
-        swipeReaderRight()
+        XCTAssertTrue(app.staticTexts["Tap for the next word"].waitForExistence(timeout: 3))
+        revealRecall()
+        XCTAssertTrue(app.buttons["grade-Good"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["close-books"].exists, "the swipe opened Books")
+
+        swipeAcrossReader(from: 0.96, to: 0.04)
+        XCTAssertTrue(app.staticTexts["Say it from memory, then tap or swipe to check"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["grade-Good"].exists, "hidden again, there's nothing to grade")
+        XCTAssertFalse(app.buttons["close-books"].exists)
+    }
+
+    func testRecallKeepsItsPlaceWhenBooksOpensFromTheReference() {
+        startRecall()
+        verse("John 1:1").tap()
+        XCTAssertTrue(app.staticTexts["Tap for the next word"].waitForExistence(timeout: 3))
+        reference.tap()
         XCTAssertTrue(app.buttons["close-books"].waitForExistence(timeout: 3))
         app.buttons["close-books"].tap()
-        XCTAssertTrue(app.staticTexts["Tap for the next word, or slide to check"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["Tap for the next word"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.buttons["end-recall"].exists)
         XCTAssertFalse(app.buttons["grade-Good"].exists)
     }
 
-    func testRecallSliderCanRewindAfterCompletionAndDrawerKeepsProgress() {
-        startRecall()
-        let slider = recallSlider
-        XCTAssertTrue(slider.waitForExistence(timeout: 3))
-        XCTAssertEqual(slider.value as? String, "0 percent")
-        verse("John 1:1").tap()
-        let advanced = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "value != '0 percent'"), object: slider)
-        XCTAssertEqual(XCTWaiter.wait(for: [advanced], timeout: 3), .completed)
-        dragRecallSlider(to: 1)
-        XCTAssertTrue(app.buttons["grade-Good"].waitForExistence(timeout: 3))
-        XCTAssertEqual(slider.value as? String, "100 percent")
-        XCTAssertFalse(app.buttons["close-books"].exists, "slider drag opened Books")
-        dragRecallSlider(to: 0.4)
-        XCTAssertFalse(app.buttons["grade-Good"].exists)
-        let value = slider.value as? String ?? ""
-        let percent = Double(value.replacingOccurrences(of: " percent", with: "")) ?? -1
-        XCTAssertEqual(percent, 40, accuracy: 3)
-        let progress = slider.value as? String
-        swipeReaderRight()
-        XCTAssertTrue(app.buttons["close-books"].waitForExistence(timeout: 3))
-        app.buttons["close-books"].tap()
-        XCTAssertTrue(slider.waitForExistence(timeout: 3))
-        XCTAssertEqual(slider.value as? String, progress)
+    /// Swipes right across the page until the whole passage shows.
+    private func revealRecall() {
+        let good = app.buttons["grade-Good"]
+        for _ in 0..<3 where !good.exists {
+            swipeAcrossReader(from: 0.04, to: 0.96)
+        }
     }
 
-    func testRecallTapStillAdvancesAfterScrubbingToAnEndpoint() {
-        startRecall()
-        let slider = recallSlider
-        XCTAssertTrue(slider.waitForExistence(timeout: 3))
-        dragRecallSlider(to: 0)
-        verse("John 1:1").tap()
-        let advanced = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "value != '0 percent'"), object: slider)
-        XCTAssertEqual(XCTWaiter.wait(for: [advanced], timeout: 3), .completed)
-        dragRecallSlider(to: 1)
-        XCTAssertTrue(app.buttons["grade-Good"].waitForExistence(timeout: 3))
-        dragRecallSlider(to: 0)
-        XCTAssertEqual(slider.value as? String, "0 percent")
-        verse("John 1:1").tap()
-        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "value != '0 percent'"), object: slider)], timeout: 3), .completed)
-    }
-
-    func testRecallSliderFollowsDiagonalDragsToBothEdges() {
-        startRecall()
-        let slider = recallSlider
-        let left = slider.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.5))
-        let rightAbove = slider.coordinate(withNormalizedOffset: CGVector(dx: 1.03, dy: -2))
-        left.press(forDuration: 0.1, thenDragTo: rightAbove, withVelocity: .slow, thenHoldForDuration: 0.2)
-        XCTAssertEqual(slider.value as? String, "100 percent")
-        XCTAssertTrue(app.buttons["grade-Good"].waitForExistence(timeout: 3))
-
-        let right = slider.coordinate(withNormalizedOffset: CGVector(dx: 0.97, dy: 0.5))
-        let leftAbove = slider.coordinate(withNormalizedOffset: CGVector(dx: -0.03, dy: -2))
-        right.press(forDuration: 0.1, thenDragTo: leftAbove, withVelocity: .slow, thenHoldForDuration: 0.2)
-        XCTAssertEqual(slider.value as? String, "0 percent")
-        XCTAssertFalse(app.buttons["grade-Good"].exists)
-        XCTAssertFalse(app.buttons["close-books"].exists)
-    }
-
-    func testRecallSliderUsesTheFingerPositionAcrossTheTrack() {
-        startRecall()
-        let slider = recallSlider
-        let left = slider.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.5))
-        let middleAbove = slider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: -3))
-        left.press(forDuration: 0.1, thenDragTo: middleAbove, withVelocity: .slow, thenHoldForDuration: 0.2)
-        let value = slider.value as? String ?? ""
-        let percent = Double(value.replacingOccurrences(of: " percent", with: "")) ?? -1
-        XCTAssertEqual(percent, 50, accuracy: 3)
-        XCTAssertFalse(app.buttons["close-books"].exists)
-    }
-
-    func testRecallSliderFollowsAFastDragToTheEdge() {
-        startRecall()
-        let slider = recallSlider
-        let left = slider.coordinate(withNormalizedOffset: CGVector(dx: 0.03, dy: 0.5))
-        let right = slider.coordinate(withNormalizedOffset: CGVector(dx: 1.03, dy: 0.5))
-        left.press(forDuration: 0, thenDragTo: right, withVelocity: .fast, thenHoldForDuration: 0)
-        XCTAssertEqual(slider.value as? String, "100 percent")
-        XCTAssertTrue(app.buttons["grade-Good"].waitForExistence(timeout: 3))
-        XCTAssertFalse(app.buttons["close-books"].exists)
-    }
-
-    private var recallSlider: XCUIElement {
-        app.descendants(matching: .any).matching(identifier: "recall-progress").firstMatch
-    }
-
-    private func dragRecallSlider(to progress: CGFloat) {
-        let slider = recallSlider
-        let value = slider.value as? String ?? ""
-        let current = (Double(value.replacingOccurrences(of: " percent", with: "")) ?? 0) / 100
-        let width = slider.frame.width
-        let startX = (14 + (width - 28) * CGFloat(current)) / width
-        let endX = (14 + (width - 28) * progress) / width
-        let start = slider.coordinate(withNormalizedOffset: CGVector(dx: startX, dy: 0.5))
-        let end = slider.coordinate(withNormalizedOffset: CGVector(dx: endX, dy: 0.5))
-        start.press(forDuration: 0.1, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
+    private func swipeAcrossReader(from: CGFloat, to: CGFloat) {
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: from, dy: 0.45))
+        let end = app.coordinate(withNormalizedOffset: CGVector(dx: to, dy: 0.45))
+        start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .default, thenHoldForDuration: 0.2)
     }
 
     func testMemoryListsPassagesByReferenceAndShowsRecallChanceOnceGraded() {
@@ -325,7 +252,7 @@ final class BibleUITests: XCTestCase {
         third.tap()
         XCTAssertTrue(app.staticTexts["John 1:3"].waitForExistence(timeout: 3), "recall starts at the passage tapped")
         XCTAssertFalse(app.staticTexts["1 of 2"].exists, "it goes down the list from there")
-        dragRecallSlider(to: 1)
+        revealRecall()
         let good = app.buttons["grade-Good"]
         XCTAssertTrue(good.waitForExistence(timeout: 3))
         XCTAssertEqual(good.label, "Good", "no date on the grade")
@@ -340,11 +267,11 @@ final class BibleUITests: XCTestCase {
 
         app.buttons["recall"].tap()
         XCTAssertTrue(app.staticTexts["1 of 2"].waitForExistence(timeout: 3))
-        dragRecallSlider(to: 1)
+        revealRecall()
         XCTAssertTrue(good.waitForExistence(timeout: 3))
         good.tap()
         XCTAssertTrue(app.staticTexts["2 of 2"].waitForExistence(timeout: 3))
-        dragRecallSlider(to: 1)
+        revealRecall()
         XCTAssertTrue(good.waitForExistence(timeout: 3))
         good.tap()
         XCTAssertTrue(app.staticTexts["John 1:3 was at 100%"].waitForExistence(timeout: 3))
@@ -372,7 +299,7 @@ final class BibleUITests: XCTestCase {
         let recall = app.buttons["recall"]
         XCTAssertTrue(recall.waitForExistence(timeout: 3))
         recall.tap()
-        XCTAssertTrue(recallSlider.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["end-recall"].waitForExistence(timeout: 3))
     }
 
     private func memorise(_ reference: String) {

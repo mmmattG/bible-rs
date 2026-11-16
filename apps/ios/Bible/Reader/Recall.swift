@@ -2,7 +2,6 @@ import UIKit
 
 /// What the reader reports about a recall as it goes.
 struct RecallStatus: Equatable {
-    var progress: Double = 0
     var started = false
     var done = false
     /// The translation being read doesn't have the passage.
@@ -11,8 +10,8 @@ struct RecallStatus: Equatable {
 
 /// A memorised passage being recalled in place. The reader keeps the chapter typeset as for
 /// reading; this hides the passage's characters (keeping their place, so nothing moves) and shows
-/// them as taps or a slider reveal them. The core says where each character
-/// appears (`recallPlan`).
+/// them as a horizontal drag or taps reveal them. The core says where each character appears
+/// (`recallPlan`).
 @MainActor
 final class RecallSession {
     let passage: MemorisedPassage
@@ -58,7 +57,7 @@ final class RecallSession {
     var shown: Float { position }
 
     var status: RecallStatus {
-        RecallStatus(progress: Double(shown / max(plan.end, 0.01)), started: position > 0.01, done: shown >= plan.end - 0.01)
+        RecallStatus(started: position > 0.01, done: shown >= plan.end - 0.01)
     }
 
     private var stops: [Float] { [0] + plan.phrases.map(\.stop) }
@@ -70,10 +69,21 @@ final class RecallSession {
 
     // MARK: Moving it
 
-    func seek(to progress: Double) {
-        position = Float(progress.clamped(to: 0...1)) * plan.end
-        velocity = 0
+    /// Moves the reveal by `dx` points of a drag across a column `width` wide; `true` when it
+    /// crosses a phrase's end.
+    @discardableResult
+    func drag(by dx: CGFloat, width: CGFloat) -> Bool {
+        let before = stops.filter { $0 <= shown + 0.01 }.count
+        position = min(max(position + Float(dx / max(width, 200)) * plan.end, 0), plan.end)
         target = nil
+        return stops.filter { $0 <= shown + 0.01 }.count != before
+    }
+
+    /// The drag ended: spring back to the end of the last word it fully showed, never further
+    /// (as the core's `Reveal::settle`), without the drag's momentum carrying it on first.
+    func release() {
+        velocity = 0
+        target = ([0] + plan.wordRests).last { $0 <= position + 0.05 } ?? 0
     }
 
     /// Shows the next word.
