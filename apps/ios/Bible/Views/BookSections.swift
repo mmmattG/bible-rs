@@ -1,29 +1,35 @@
 import SwiftUI
 
 /// The books by section of the canon: the sections under their testaments, the open section's
-/// books folded out beneath it, then the chosen book's chapters. It opens on the book being read,
-/// so its chapters are one tap away and any chapter at most three.
+/// books folded out beneath it, and the chosen book's chapters straight beneath the book across
+/// the full width, so a chapter is chosen where the book was. It opens on the book being read, so
+/// its chapters are one tap away and any chapter at most three. Another section opens to its books
+/// alone, so none of them is pushed down behind chapters nobody asked for.
 struct BookSections: View {
     @Environment(Store.self) private var store
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let theme: Theme
     let go: (Int) -> Void
 
-    /// The book whose chapters show; `nil` is the book being read. Its section is the one that
-    /// unfolds.
+    /// The book whose chapters show; `nil` is the book being read.
     @State private var chosen: UInt8?
-    /// Whether the chosen book's section has its books folded away.
-    @State private var folded = false
+    @State private var browsing = Browsing.chosenBook
     /// What to bring into view next, and how many times that's been asked, so choosing the
     /// book already chosen scrolls to it again.
     @State private var reveal = Reveal.current
     @State private var reveals = 0
-    /// The sections' height with the open one's books, as laid out.
-    @State private var browseHeight: CGFloat = 0
-    /// Compact rows, as in a sidebar, so a phone has room for the chapters beneath.
+    /// Compact rows, as in a sidebar.
     @ScaledMetric(relativeTo: .subheadline) private var rowHeight: CGFloat = 32
     @ScaledMetric(relativeTo: .footnote) private var headerHeight: CGFloat = 28
     @ScaledMetric(relativeTo: .subheadline) private var bookIndent: CGFloat = 12
+
+    /// Which section has its books unfolded.
+    private enum Browsing: Equatable {
+        /// The chosen book's, as when the picker opens.
+        case chosenBook
+        case section(String)
+        case none
+    }
 
     private enum Reveal {
         /// The chapter being read.
@@ -34,125 +40,87 @@ struct BookSections: View {
         case chapters
     }
 
+    /// Where a book just chosen settles: high enough that its chapters show beneath it.
+    private static let chosenBookAnchor = UnitPoint(x: 0.5, y: 0.25)
+
     private var current: BookInfo { store.book(of: store.position.chapter) }
     private var book: BookInfo { chosen.map { store.bookList[Int($0)] } ?? current }
-    private var section: BibleSection { store.section(of: book) }
+    private var openSection: String? {
+        switch browsing {
+        case .chosenBook: store.section(of: book).name
+        case .section(let name): name
+        case .none: nil
+        }
+    }
     /// One column of sections rather than a column per testament, at the largest text sizes.
     private var stacked: Bool { dynamicTypeSize.isAccessibilitySize }
 
     var body: some View {
-        GeometryReader { geo in
-            let room = browseRoom(in: geo.size.height)
-            ScrollViewReader { proxy in
-                Group {
-                    if let room {
-                        // The sections stay put above the chapters, and scroll only when the open
-                        // section's books don't fit.
-                        VStack(spacing: 0) {
-                            ScrollView {
-                                browse
-                                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-                                        // Folding animates; the first layout doesn't.
-                                        withAnimation(browseHeight == 0 ? nil : .smooth(duration: 0.25)) {
-                                            browseHeight = height
-                                        }
-                                    }
-                            }
-                            .frame(height: min(browseHeight, room))
-                            .scrollBounceBehavior(.basedOnSize)
-                            chaptersHeader
-                            ScrollView {
-                                chapters.padding(.bottom, 16)
-                            }
-                            .scrollBounceBehavior(.basedOnSize)
-                        }
-                    } else {
-                        ScrollView {
-                            VStack(spacing: 0) {
-                                browse
-                                chaptersHeader.id(Reveal.chapters)
-                                chapters.padding(.bottom, 16)
-                            }
-                        }
+        ScrollViewReader { proxy in
+            ScrollView {
+                browse.padding(.bottom, 16)
+            }
+            .task(id: reveals) {
+                // Once the new books and chapters are laid out.
+                await Task.yield()
+                switch reveal {
+                case .current:
+                    proxy.scrollTo(Self.id(book), anchor: .center)
+                    proxy.scrollTo(ChapterGrid.id(store.position.chapter), anchor: .center)
+                case .books:
+                    if let openSection {
+                        withAnimation { proxy.scrollTo(Self.sectionID(openSection), anchor: .top) }
                     }
-                }
-                .task(id: reveals) {
-                    // Once the new books and chapters are laid out.
-                    await Task.yield()
-                    let fixed = room != nil
-                    let chapter = book.index == current.index ? store.position.chapter : Int(book.firstChapter)
-                    switch reveal {
-                    case .current:
-                        if fixed { proxy.scrollTo(Self.id(book)) }
-                        proxy.scrollTo(ChapterGrid.id(chapter), anchor: .center)
-                    case .books:
-                        withAnimation { proxy.scrollTo(Self.id(section), anchor: .top) }
-                        if fixed { proxy.scrollTo(ChapterGrid.id(chapter), anchor: .center) }
-                    case .chapters:
-                        if fixed {
-                            proxy.scrollTo(ChapterGrid.id(chapter), anchor: .center)
-                        } else {
-                            withAnimation { proxy.scrollTo(Reveal.chapters, anchor: .top) }
-                        }
-                    }
+                case .chapters:
+                    withAnimation { proxy.scrollTo(Self.id(book), anchor: Self.chosenBookAnchor) }
                 }
             }
         }
     }
 
-    /// How tall the sections may be in `height` with two and a half rows of chapters beneath, or
-    /// `nil` if that leaves too little for the sections and a few books (a phone on its side, the
-    /// largest text sizes), and everything scrolls together instead.
-    private func browseRoom(in height: CGFloat) -> CGFloat? {
-        guard !stacked else { return nil }
-        let room = height - (headerHeight + 4) - 2.5 * (44 + 8)
-        let rows = store.sections.filter { !$0.newTestament }.count + 3
-        return room >= headerHeight + 4 + CGFloat(rows) * (rowHeight + 2) ? room : nil
-    }
-
-    /// Each testament's sections, the open one with its books beneath it.
+    /// Each testament's sections, the open one with its books beneath it, and the chosen book
+    /// with its chapters.
     private var browse: some View {
-        let layout =
-            stacked
-            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 0))
-            : AnyLayout(HStackLayout(alignment: .top, spacing: 0))
-        return layout {
-            testament("Old Testament", store.sections.filter { !$0.newTestament })
-            testament("New Testament", store.sections.filter(\.newTestament))
+        SpannedColumns(columns: stacked ? 1 : 2, spacing: 2) {
+            testament("Old Testament", store.sections.filter { !$0.newTestament }, column: 0)
+            testament("New Testament", store.sections.filter(\.newTestament), column: stacked ? 0 : 1)
         }
         .padding(.horizontal, 10)
+        .accessibilityElement(children: .contain)
     }
 
-    private func testament(_ title: String, _ sections: [BibleSection]) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            header(title)
-            ForEach(sections, id: \.name) { s in
-                sectionRow(s)
-                if s.name == section.name && !folded {
-                    ForEach(store.bookList.filter { s.contains($0) }, id: \.index) { b in
-                        bookRow(b)
+    @ViewBuilder
+    private func testament(_ title: String, _ sections: [BibleSection], column: Int) -> some View {
+        header(title).row(column: column)
+        ForEach(sections, id: \.name) { s in
+            sectionRow(s).row(column: column)
+            if s.name == openSection {
+                ForEach(store.bookList.filter { s.contains($0) }, id: \.index) { b in
+                    bookRow(b).row(column: column)
+                    if b.index == book.index && b.chapters > 1 {
+                        ChapterGrid(book: b, reading: store.position.chapter, theme: theme, go: go)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .row(column: column, spansColumns: true)
                     }
                 }
             }
         }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        // VoiceOver reads down one testament, then the other.
-        .accessibilityElement(children: .contain)
     }
 
     /// A section's row, which folds its books in and out: the open one is bold, and the one
     /// holding the chapter being read is in the accent.
     private func sectionRow(_ s: BibleSection) -> some View {
-        let open = s.name == section.name && !folded
+        let open = s.name == openSection
         let reading = s.contains(current)
         let state = open ? "Expanded" : "Collapsed"
         return Button {
             withAnimation(.smooth(duration: 0.25)) {
-                if s.name == section.name {
-                    folded.toggle()
+                if open {
+                    browsing = .none
                 } else {
-                    folded = false
-                    choose(reading ? current.index : s.firstBook, revealing: .books)
+                    browsing = .section(s.name)
+                    show(.books)
                 }
             }
         } label: {
@@ -175,7 +143,7 @@ struct BookSections: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .id(Self.id(s))
+        .id(Self.sectionID(s.name))
         .accessibilityValue(reading ? "\(state), has the chapter you're reading" : state)
         .accessibilityHint(open ? "Folds its books away" : "Shows its books")
     }
@@ -189,7 +157,10 @@ struct BookSections: View {
             if b.chapters == 1 {
                 go(Int(b.firstChapter))
             } else {
-                choose(b.index, revealing: .chapters)
+                withAnimation(.smooth(duration: 0.25)) {
+                    chosen = b.index
+                    show(.chapters)
+                }
             }
         } label: {
             Text(b.name)
@@ -213,32 +184,10 @@ struct BookSections: View {
         .accessibilityHint(b.chapters == 1 ? "Opens the book" : "Shows its chapters")
     }
 
-    /// Shows the chapters of the book at `index`, then brings `what` into view.
-    private func choose(_ index: UInt8, revealing what: Reveal) {
-        chosen = index
+    /// Brings `what` into view once it is laid out.
+    private func show(_ what: Reveal) {
         reveal = what
         reveals += 1
-    }
-
-    private var chaptersHeader: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            header("Chapters")
-                .fixedSize()
-            Text(book.name)
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(Color(theme.ink2))
-                .accessibilityHidden(true)
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 10)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Chapters of \(book.name)")
-        .accessibilityAddTraits(.isHeader)
-    }
-
-    private var chapters: some View {
-        ChapterGrid(book: book, reading: store.position.chapter, theme: theme, go: go)
-            .padding(.horizontal, 20)
     }
 
     private func header(_ title: String) -> some View {
@@ -252,6 +201,68 @@ struct BookSections: View {
     }
 
     /// The scroll ids of a section's row and a book's row.
-    private static func id(_ section: BibleSection) -> String { "section-\(section.name)" }
+    private static func sectionID(_ name: String) -> String { "section-\(name)" }
     private static func id(_ book: BookInfo) -> String { "book-\(book.index)" }
+}
+
+/// Rows in equal columns, each filling downwards. A row that spans the columns sits beneath the
+/// rows before it in its own column, and pushes down the other columns' rows that would cross it.
+private struct SpannedColumns: Layout {
+    let columns: Int
+    let spacing: CGFloat
+
+    struct Column: LayoutValueKey {
+        static let defaultValue = 0
+    }
+
+    struct SpansColumns: LayoutValueKey {
+        static let defaultValue = false
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.replacingUnspecifiedDimensions().width
+        let height = frames(width: width, subviews: subviews).map(\.maxY).max() ?? 0
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for (subview, frame) in zip(subviews, frames(width: bounds.width, subviews: subviews)) {
+            subview.place(
+                at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                proposal: ProposedViewSize(width: frame.width, height: frame.height))
+        }
+    }
+
+    private func frames(width: CGFloat, subviews: Subviews) -> [CGRect] {
+        let columnWidth = width / CGFloat(columns)
+        var frames = [CGRect](repeating: .zero, count: subviews.count)
+        var span: CGRect?
+        // The spanning row's own column first, so the other columns know where it is.
+        let spanColumn = subviews.first { $0[SpansColumns.self] }?[Column.self]
+        let order = [spanColumn].compactMap { $0 } + (0..<columns).filter { $0 != spanColumn }
+        for column in order {
+            var y: CGFloat = 0
+            for (index, subview) in subviews.enumerated() where subview[Column.self] == column {
+                let spans = subview[SpansColumns.self]
+                let rowWidth = spans ? width : columnWidth
+                let height = subview.sizeThatFits(ProposedViewSize(width: rowWidth, height: nil)).height
+                if let span, y < span.maxY, y + height > span.minY {
+                    y = span.maxY + spacing
+                }
+                frames[index] = CGRect(x: spans ? 0 : CGFloat(column) * columnWidth, y: y, width: rowWidth, height: height)
+                if spans { span = frames[index] }
+                y += height + spacing
+            }
+        }
+        return frames
+    }
+}
+
+extension View {
+    /// Where a row goes in `SpannedColumns`. VoiceOver reads down one column, then the next.
+    fileprivate func row(column: Int, spansColumns: Bool = false) -> some View {
+        layoutValue(key: SpannedColumns.Column.self, value: column)
+            .layoutValue(key: SpannedColumns.SpansColumns.self, value: spansColumns)
+            .accessibilitySortPriority(Double(-column))
+    }
 }

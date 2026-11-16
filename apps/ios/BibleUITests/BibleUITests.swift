@@ -420,25 +420,43 @@ final class BibleUITests: XCTestCase {
         let layout = app.buttons["book-layout"]
         XCTAssertTrue(layout.waitForExistence(timeout: 3))
         layout.tap()
-        app.buttons["Sections"].tap()
+        let sections = app.buttons["Sections"]
+        // The menu can miss a tap made while Books is still sliding in.
+        if !sections.waitForExistence(timeout: 2) { layout.tap() }
+        XCTAssertTrue(sections.waitForExistence(timeout: 3))
+        sections.tap()
     }
 
     func testPicksFromSections() {
         showSections()
-        // Sections open on John's: the Gospels and Acts unfolded, with John's chapters.
+        // Sections open on John's: the Gospels and Acts unfolded, with John's chapters beneath John.
+        let john = app.buttons["John"]
         XCTAssertTrue(app.buttons["John 3"].waitForExistence(timeout: 3))
         XCTAssertEqual(app.buttons["Gospels and Acts"].value as? String, "Expanded, has the chapter you're reading")
-        XCTAssertTrue(app.buttons["John"].isSelected)
+        XCTAssertTrue(john.isSelected)
+        XCTAssertEqual(app.buttons["John 1"].frame.minY, john.frame.maxY, accuracy: 12, "chapters sit under their book")
+        XCTAssertGreaterThan(app.buttons["Acts"].frame.minY, app.buttons["John 21"].frame.maxY, "and above the next book")
         let pauline = app.buttons["Pauline Epistles"]
         pauline.tap()
-        XCTAssertTrue(app.buttons["Romans"].isSelected, "a section opens on its first book")
+        let romans = app.buttons["Romans"]
+        XCTAssertTrue(romans.waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["Romans 1"].exists, "a section opens to its books alone")
+        XCTAssertFalse(john.exists, "one section is open at a time")
+        romans.tap()
+        XCTAssertTrue(app.buttons["Romans 1"].waitForExistence(timeout: 3))
         pauline.tap()
-        XCTAssertTrue(app.buttons["Romans"].waitForNonExistence(timeout: 3), "the open section folds")
-        XCTAssertTrue(app.buttons["Romans 1"].exists, "its book's chapters stay")
+        XCTAssertTrue(romans.waitForNonExistence(timeout: 3), "the open section folds")
+        XCTAssertFalse(app.buttons["Romans 1"].exists, "its chapters fold with it")
         pauline.tap()
-        app.buttons["Galatians"].tap()
+        let galatians = app.buttons["Galatians"]
+        XCTAssertTrue(galatians.waitForExistence(timeout: 3))
+        galatians.tap()
         let five = app.buttons["Galatians 5"]
         XCTAssertTrue(five.waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["Romans 1"].exists, "only the chosen book shows chapters")
+        XCTAssertEqual(app.buttons["Galatians 1"].frame.minY, galatians.frame.maxY, accuracy: 12)
+        XCTAssertLessThan(
+            app.buttons["Galatians 1"].frame.minX, galatians.frame.minX - 40, "chapters take the full width")
         five.tap()
         expectChapter("Galatians 5")
         XCTAssertTrue(verse("Galatians 5:22").label.contains("fruit of the Spirit"))
