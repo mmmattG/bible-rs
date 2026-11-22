@@ -89,6 +89,7 @@ pub fn parse_text(c: ChapterIdx, text: &str) -> Translation {
     let mut headings_before_first = 0;
     let mut in_poetry = false;
     let mut pending_blank = false;
+    let is_psalm_119 = c.book() == BookId::PSALMS && c.chapter() == 119;
     for line in text.lines() {
         if line.trim().is_empty() {
             pending_blank = in_poetry;
@@ -96,6 +97,13 @@ pub fn parse_text(c: ChapterIdx, text: &str) -> Translation {
         }
         let indent = line.len() - line.trim_start_matches(' ').len();
         let content = line.trim();
+        if is_psalm_119 && PSALM_119_STANZAS.contains(&content) {
+            // The API indents these like poetry, so without this they would read as verse text.
+            b.heading(MarkKind::Heading, 3, content);
+            in_poetry = false;
+            pending_blank = false;
+            continue;
+        }
         let has_verse = find_marker(content, 0).is_some();
         if indent == 0 && !has_verse {
             // Headings (and, before the first verse of a psalm, its superscription).
@@ -165,6 +173,32 @@ fn emit(b: &mut TranslationBuilder, s: &str) {
     b.text(rest);
 }
 
+/// The ESV's names for the Hebrew letters heading the 22 stanzas of Psalm 119.
+const PSALM_119_STANZAS: [&str; 22] = [
+    "Aleph",
+    "Beth",
+    "Gimel",
+    "Daleth",
+    "He",
+    "Waw",
+    "Zayin",
+    "Heth",
+    "Teth",
+    "Yodh",
+    "Kaph",
+    "Lamedh",
+    "Mem",
+    "Nun",
+    "Samekh",
+    "Ayin",
+    "Pe",
+    "Tsadhe",
+    "Qoph",
+    "Resh",
+    "Sin and Shin",
+    "Taw",
+];
+
 fn looks_like_superscription(s: &str) -> bool {
     ["A Psalm", "A Song", "A Maskil", "A Miktam", "A Prayer", "Of David", "To the choirmaster", "A Shiggaion"]
         .iter()
@@ -219,6 +253,23 @@ mod tests {
         assert_eq!(vs[0].plain_text(), "The LORD is my shepherd; I shall not want.");
         assert_eq!(vs[0].spans[0].style, Style::DivineName);
         assert_eq!(vs[2].marks[0].kind, MarkKind::Blank);
+    }
+
+    #[test]
+    fn parses_psalm_119_stanza_letters_as_headings() {
+        const PSALM_119: &str = "Thy Word\n\nAleph\n\n    [1] Blessed are the undefiled in the way,\n        who walk in the law of the LORD.\n    [8] I will keep thy statutes:\n        O forsake me not utterly.\n    \n    \n    Beth\n\n    [9] Wherewithal shall a young man cleanse his way?\n        by taking heed thereto according to thy word.\n";
+        let c = ChapterIdx::new(BookId::PSALMS, 119).unwrap();
+        let t = parse_text(c, PSALM_119);
+        let vs: Vec<_> = t.verses_in(c).collect();
+        let marks = |i: usize| vs[i].marks.iter().map(|m| (m.kind, m.level)).collect::<Vec<_>>();
+        assert_eq!(
+            marks(0),
+            [(MarkKind::Heading, 1), (MarkKind::Heading, 3), (MarkKind::Poetry, 1), (MarkKind::Poetry, 2)]
+        );
+        assert_eq!(t.mark_text(&vs[0].marks[1]), "Aleph");
+        assert_eq!(vs[1].plain_text(), "I will keep thy statutes: O forsake me not utterly.");
+        assert_eq!(marks(2), [(MarkKind::Heading, 3), (MarkKind::Poetry, 1), (MarkKind::Poetry, 2)]);
+        assert_eq!(t.mark_text(&vs[2].marks[0]), "Beth");
     }
 
     #[test]
