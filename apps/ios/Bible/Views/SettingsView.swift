@@ -1,9 +1,11 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Theme, type and reading options, applied as you change them.
 struct SettingsView: View {
     @Environment(Store.self) private var store
     @Environment(\.dismiss) private var dismiss
+    @State private var choosingFolder = false
     let theme: Theme
 
     var body: some View {
@@ -56,9 +58,16 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    Toggle("Sync with iCloud", isOn: $store.settings.studyLibrary)
+                    Toggle("Sync", isOn: $store.settings.studyLibrary)
                         .accessibilityIdentifier("study-library-icloud")
                     if store.settings.studyLibrary {
+                        LabeledContent("Folder", value: store.studyLibraryFolder ?? "iCloud Drive › Bible")
+                            .accessibilityIdentifier("study-library-folder")
+                        Button("Choose Folder…") { choosingFolder = true }
+                            .accessibilityIdentifier("study-library-choose")
+                        if store.studyLibraryFolder != nil {
+                            Button("Use the App’s iCloud Folder") { store.useAppICloudFolder() }
+                        }
                         VStack(alignment: .leading, spacing: 4) {
                             Text(store.studyLibraryLabel)
                             if let detail = store.studyLibraryDetail {
@@ -79,8 +88,11 @@ struct SettingsView: View {
                     Text("Study Library (beta)")
                 } footer: {
                     Text(
-                        "Keep your notes, highlights, bookmarks and plans in iCloud Drive to use them on a Mac that opens the same library. Off by default. Your study stays on this iPhone until you turn this on."
+                        "Keep your notes, highlights, bookmarks, plans and memorised passages in a folder, and choose the same folder in the Mac app’s Settings. Off by default. Your study stays on this iPhone until you turn this on."
                     )
+                }
+                .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
+                    if case .success(let url) = result { store.chooseStudyLibraryFolder(url) }
                 }
 
                 Section("Notes and highlights") {
