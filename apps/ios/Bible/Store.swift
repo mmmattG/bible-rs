@@ -20,7 +20,7 @@ struct ReaderSettings: Codable, Equatable {
     var recallLetters = true
     var memoryOrder = MemorySort.fading
     /// Study Library (beta): sync notes, highlights, bookmarks and plans through this app's
-    /// iCloud Drive folder. Off until the reader turns it on.
+    /// iCloud Drive folder, or a folder chosen in Files. Off until the reader turns it on.
     var studyLibrary = false
 
     static let textSizes: ClosedRange<Double> = 14...32
@@ -131,6 +131,8 @@ final class Store {
 
     /// Study Library (beta) status shown in Settings.
     private(set) var studyLibraryLabel = "Off"
+    /// The folder chosen in Files, or nil for the app's own iCloud folder.
+    private(set) var studyLibraryFolder: String?
     private(set) var studyLibraryDetail: String?
     private(set) var studyLibrarySyncing = false
     @ObservationIgnored private var studyLibraryTask: Task<Void, Never>?
@@ -171,6 +173,10 @@ final class Store {
         if ProcessInfo.processInfo.arguments.contains("--open-settings") {
             sheet = .settings
         }
+        if ProcessInfo.processInfo.arguments.contains("--uitest") {
+            StudyLibrary.chosen = Self.uiTestStudyLibraryFolder()
+        }
+        studyLibraryFolder = StudyLibrary.chosen?.name
         if settings.studyLibrary {
             startStudyLibrary()
         }
@@ -576,6 +582,51 @@ final class Store {
         runStudyLibrarySync()
     }
 
+    func chooseStudyLibraryFolder(_ url: URL) {
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let result = Result { try StudyLibrary.choose(url) }
+            await self?.applyChosenFolder(result)
+        }
+    }
+
+    func useAppICloudFolder() {
+        StudyLibrary.chosen = nil
+        studyLibraryFolder = nil
+        restartStudyLibrary()
+    }
+
+    private func applyChosenFolder(_ result: Result<StudyLibrary.ChosenFolder, Error>) {
+        switch result {
+        case .success(let chosen):
+            StudyLibrary.chosen = chosen
+            studyLibraryFolder = chosen.name
+            restartStudyLibrary()
+        case .failure(let error):
+            show("Couldn’t use that folder: \(error.localizedDescription)")
+        }
+    }
+
+    private func restartStudyLibrary() {
+        guard settings.studyLibrary else {
+            // Turning it on starts the first sync.
+            settings.studyLibrary = true
+            return
+        }
+        stopStudyLibrary()
+        studyLibraryLabel = "Syncing…"
+        studyLibraryDetail = nil
+        startStudyLibrary()
+        syncStudyLibraryNow()
+    }
+
+    /// UI tests never touch a real library: none, or the folder named after
+    /// `--study-library-folder`.
+    private static func uiTestStudyLibraryFolder() -> StudyLibrary.ChosenFolder? {
+        let args = ProcessInfo.processInfo.arguments
+        guard let i = args.firstIndex(of: "--study-library-folder"), i + 1 < args.count else { return nil }
+        return try? StudyLibrary.choose(URL(fileURLWithPath: args[i + 1], isDirectory: true))
+    }
+
     private func studyLibraryToggled() {
         if settings.studyLibrary {
             startStudyLibrary()
@@ -721,8 +772,9 @@ final class Store {
         let bible = bible
         let queryDidGather = queryDidGather
         let generation = studyLibraryGeneration
+        let chosen = StudyLibrary.chosen
         studyLibraryTask = Task.detached(priority: .utility) { [weak self] in
-            let outcome = StudyLibrary.run(bible: bible, queryDidGather: queryDidGather)
+            let outcome = StudyLibrary.run(bible: bible, queryDidGather: queryDidGather, chosen: chosen)
             await self?.applyStudyLibrary(outcome, generation: generation)
         }
     }
@@ -748,7 +800,7 @@ final class Store {
             studyLibraryDetail = "Sign in to iCloud in the Settings app to sync this library."
         case .unavailable:
             studyLibraryLabel = "iCloud isn’t available"
-            studyLibraryDetail = "This iPhone couldn’t reach the Study Library folder."
+            studyLibraryDetail = "This build can’t reach its iCloud folder. Choose a folder in Files instead."
         case .waiting(let count):
             studyLibraryLabel = "Waiting for iCloud…"
             studyLibraryDetail =
@@ -758,6 +810,9 @@ final class Store {
             studyLibraryLabel = "Waiting for iCloud…"
             studyLibraryDetail = "Checking for a library already in iCloud Drive."
             retryStudyLibrary(after: 3)
+        case .folderMissing:
+            studyLibraryLabel = "Can’t find the folder"
+            studyLibraryDetail = "Choose it again, or use the app’s iCloud folder."
         case .synced(let changed, let conflicts, let label, let offline, let devices):
             let now = Date()
             lastSyncedAt = now

@@ -1,11 +1,76 @@
 import Foundation
 
 /// The iPhone side of the Study Library folder the Mac app already writes: `library.json`,
-/// `changes/<device>/` and `snapshots/` in this app's iCloud Drive documents container.
-/// The study SQLite file stays in Application Support and is never placed in the folder.
+/// `changes/<device>/` and `snapshots/`, in this app's iCloud Drive documents container or in
+/// a folder the reader chose in Files. The study SQLite file stays in Application Support and
+/// is never placed in the folder.
 enum StudyLibrary {
     static let containerId = "iCloud.dev.bible-rs.ios"
     static let folderName = "Bible Study Library"
+
+    /// A folder chosen in Files instead of the app's iCloud container. It needs no iCloud
+    /// entitlement, so it also works for builds signed by a team without one. Saved on this
+    /// device only, as a bookmark to the folder that was picked.
+    struct ChosenFolder: Codable, Equatable, Sendable {
+        var bookmark: Data
+        /// Set when the picked folder held other things, so the library lives inside it.
+        var subfolder: String?
+        var name: String
+    }
+
+    private static let chosenKey = "studyLibraryFolder"
+
+    static var chosen: ChosenFolder? {
+        get {
+            UserDefaults.standard.data(forKey: chosenKey)
+                .flatMap { try? JSONDecoder().decode(ChosenFolder.self, from: $0) }
+        }
+        set {
+            if let newValue, let data = try? JSONEncoder().encode(newValue) {
+                UserDefaults.standard.set(data, forKey: chosenKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: chosenKey)
+            }
+        }
+    }
+
+    /// The same rule as the Mac app: an empty folder or an existing library is used as it is,
+    /// and any other folder gets a "Bible Study Library" folder inside it.
+    static func choose(_ picked: URL) throws -> ChosenFolder {
+        let scoped = picked.startAccessingSecurityScopedResource()
+        defer { if scoped { picked.stopAccessingSecurityScopedResource() } }
+        var subfolder: String?
+        try coordinate(writing: picked) { url in
+            let fm = FileManager.default
+            let names = try fm.contentsOfDirectory(atPath: url.path)
+            let isLibrary = names.contains("library.json") || names.contains(".library.json.icloud")
+            let isEmpty = names.allSatisfy { $0.hasPrefix(".") }
+            if !isLibrary && !isEmpty {
+                subfolder = folderName
+                try fm.createDirectory(
+                    at: url.appendingPathComponent(folderName, isDirectory: true),
+                    withIntermediateDirectories: true)
+            }
+        }
+        let name = [picked.lastPathComponent, subfolder].compactMap { $0 }.joined(separator: " › ")
+        return ChosenFolder(bookmark: try picked.bookmarkData(), subfolder: subfolder, name: name)
+    }
+
+    /// Runs `body` on the chosen library folder while this app has access to it.
+    private static func withChosen(_ chosen: ChosenFolder, _ body: (URL) -> Outcome) -> Outcome {
+        var stale = false
+        guard let root = try? URL(resolvingBookmarkData: chosen.bookmark, bookmarkDataIsStale: &stale) else {
+            return .folderMissing
+        }
+        let scoped = root.startAccessingSecurityScopedResource()
+        defer { if scoped { root.stopAccessingSecurityScopedResource() } }
+        if stale, let fresh = try? root.bookmarkData() {
+            var renewed = chosen
+            renewed.bookmark = fresh
+            self.chosen = renewed
+        }
+        return body(chosen.subfolder.map { root.appendingPathComponent($0, isDirectory: true) } ?? root)
+    }
 
     enum Availability: Equatable {
         /// No iCloud account on this device.
@@ -195,39 +260,49 @@ enum StudyLibrary {
         case unavailable
         case waiting(Int)
         case waitingToAppear
+        case folderMissing
         case synced(changed: UInt32, conflicts: UInt32, label: String, offline: Bool, devices: UInt32)
         case failed(String)
     }
 
-    /// Resolves the container, waits for downloads, then syncs. Call off the main thread.
-    static func run(bible: Bible, queryDidGather: Bool) -> Outcome {
+    /// Resolves the folder, waits for downloads, then syncs. Call off the main thread.
+    static func run(bible: Bible, queryDidGather: Bool, chosen: ChosenFolder?) -> Outcome {
+        if let chosen {
+            // The metadata query only watches the app's container. A chosen folder still
+            // downloading shows placeholders, so it never looks empty.
+            return withChosen(chosen) { pass(bible: bible, folder: $0, queryDidGather: true) }
+        }
         switch availability() {
         case .signedOut:
             return .signedOut
         case .unavailable:
             return .unavailable
         case .ready(let folder):
-            do {
-                switch try prepare(folder) {
-                case .waiting(let count):
-                    return .waiting(count)
-                case .ready:
-                    if !mayOpen(folder, queryDidGather: queryDidGather) {
-                        return .waitingToAppear
-                    }
-                    let sync = try self.sync(bible: bible, folder: folder)
-                    let status = self.status(bible: bible, folder: folder)
-                    return .synced(
-                        changed: sync.changed,
-                        conflicts: sync.conflicts,
-                        label: status.label,
-                        offline: status.offline,
-                        devices: status.devices
-                    )
+            return pass(bible: bible, folder: folder, queryDidGather: queryDidGather)
+        }
+    }
+
+    private static func pass(bible: Bible, folder: URL, queryDidGather: Bool) -> Outcome {
+        do {
+            switch try prepare(folder) {
+            case .waiting(let count):
+                return .waiting(count)
+            case .ready:
+                if !mayOpen(folder, queryDidGather: queryDidGather) {
+                    return .waitingToAppear
                 }
-            } catch {
-                return .failed(error.localizedDescription)
+                let sync = try self.sync(bible: bible, folder: folder)
+                let status = self.status(bible: bible, folder: folder)
+                return .synced(
+                    changed: sync.changed,
+                    conflicts: sync.conflicts,
+                    label: status.label,
+                    offline: status.offline,
+                    devices: status.devices
+                )
             }
+        } catch {
+            return .failed(error.localizedDescription)
         }
     }
 }

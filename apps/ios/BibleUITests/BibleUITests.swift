@@ -557,6 +557,32 @@ final class BibleUITests: XCTestCase {
         saveStudyLibraryScreenshot("settings-study-library-on")
     }
 
+    func testStudyLibrarySyncsWithAChosenFolder() throws {
+        let folder = URL(fileURLWithPath: "/tmp/bible-ios-chosen-library-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        app.terminate()
+        app.launchArguments = ["--uitest", "--study-library-folder", folder.path]
+        app.launch()
+        XCTAssertTrue(reference.waitForExistence(timeout: 10))
+
+        app.buttons["settings"].tap()
+        let toggle = app.switches["study-library-icloud"]
+        for _ in 0..<12 where !toggle.exists || !toggle.isHittable {
+            app.swipeUp()
+        }
+        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+        let row = app.descendants(matching: .any)["study-library-folder"]
+        XCTAssertTrue(row.waitForExistence(timeout: 3))
+        XCTAssertTrue(row.label.contains(folder.lastPathComponent), row.label)
+
+        let marker = folder.appendingPathComponent("library.json").path
+        let created = expectation(
+            for: NSPredicate { _, _ in FileManager.default.fileExists(atPath: marker) }, evaluatedWith: nil)
+        wait(for: [created], timeout: 20)
+        saveStudyLibraryScreenshot("settings-study-library-chosen-folder")
+    }
+
     private func saveStudyLibraryScreenshot(_ name: String) {
         let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         shot.name = name
