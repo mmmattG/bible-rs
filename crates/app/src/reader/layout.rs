@@ -774,14 +774,15 @@ impl Builder<'_, '_> {
         }
     }
 
-    fn heading(&mut self, kind: MarkKind, _level: u8, text: &str) {
+    fn heading(&mut self, kind: MarkKind, level: u8, text: &str) {
         if !self.cx.typo.headings && kind == MarkKind::Heading {
             return;
         }
         let p = self.cx.p();
         let s = |pt: f32| self.cx.s(pt);
         // A psalm opens with its heading and title under the "PSALM n" label.
-        let psalm_head = self.psalm_head && self.blocks.is_empty();
+        // An acrostic letter (Psalm 119's Aleph) heads a stanza, not the psalm.
+        let psalm_head = self.psalm_head && self.blocks.is_empty() && level < 3;
         let (family, style, color, before, after) = match kind {
             MarkKind::PsalmTitle => {
                 (SERIF_ITALIC, text::SUBTITLE, p.ink_2, if psalm_head { 0.0 } else { s(4.0) }, s(8.0))

@@ -386,7 +386,8 @@ impl Builder {
         if !self.opts.headings && kind == MarkKind::Heading {
             return;
         }
-        let opening = self.psalm && self.text_blocks == 0;
+        // An acrostic letter (Psalm 119's Aleph) heads a stanza, not the psalm.
+        let opening = self.psalm && self.text_blocks == 0 && level < 3;
         let (kind, before, after): (BlockKind, f32, f32) = match kind {
             MarkKind::PsalmTitle => (BlockKind::PsalmTitle, if opening { 0.0 } else { 4.0 }, 8.0),
             MarkKind::Speaker => (BlockKind::Speaker, 12.0, 4.0),
@@ -572,6 +573,18 @@ mod tests {
             checked += 1;
         }
         checked
+    }
+
+    #[test]
+    fn psalm_119_opening_letter_is_a_stanza_heading() {
+        let c = ChapterIdx::new(BookId::PSALMS, 119).unwrap();
+        let t = crate::online::esv::parse_text(
+            c,
+            "Thy Word\n\nAleph\n\n    [1] Blessed are the undefiled in the way,\n",
+        );
+        let content = chapter(&t, c, ContentOptions::default());
+        let kinds: Vec<_> = content.blocks.iter().take(2).map(|b| b.kind).collect();
+        assert_eq!(kinds, [BlockKind::PsalmHeading, BlockKind::Heading { level: 3 }]);
     }
 
     #[test]
